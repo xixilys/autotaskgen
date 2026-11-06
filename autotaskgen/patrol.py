@@ -133,6 +133,8 @@ import progress_inspect as inspect_tool  # noqa: E402
 IDLE_S = 2 * 3600
 IDLE_FREE_MEM_GB = 16   # worker host with more available memory than this counts as "machine free"
 UNREVIEWED_S = 2 * 3600
+ESCALATE_UNREVIEWED_N = 3        # this many unreviewed deliveries (one older than UNREVIEWED_S) ...
+ROUTER_QUIET_S = 45 * 60         # ... while the router wrote nothing this long -> tell the coordinator
 CLAIM_S = 4 * 3600
 LIVE_STALE_S = 30 * 60
 NUDGE_GAP_S = 3600
@@ -1375,6 +1377,10 @@ def plan(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[D
     per_router: Dict[str, Dict[str, Any]] = {}
 
     nudges = list(_patrol_events(events, "nudge"))
+    router_last: Dict[str, str] = {}   # line -> newest event a router wrote itself
+    for e in events:
+        if (e.get("actor") or {}).get("role") == "router" and e.get("line"):
+            router_last[e["line"]] = max(router_last.get(e["line"], ""), e.get("at") or "")
     observed = {}
     for e in _patrol_events(events, "observe"):
         k = (e.get("refs") or {}).get("key")
@@ -1765,12 +1771,34 @@ def plan(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[D
                 findings.append({"line": lid, "node": nid, "code": "process_gone"})
                 items.append("卡住：%s 的 worker 进程已不在，但没有交付，请核对后重派或写 block" % nid)
 
+        unrev_old, unrev_all = [], 0
         for nid, n in sorted(nodes.items()):
             if n.get("status") in ("delivered", "failed") and not n.get("review"):
+                unrev_all += 1
                 age = _age(now, n.get("delivered_at"))
                 if age is not None and age > UNREVIEWED_S:
+                    unrev_old.append(age)
                     findings.append({"line": lid, "node": nid, "code": "unreviewed", "age_h": round(age / 3600, 1)})
                     items.append("未审：%s 交付 %d 小时未审查" % (nid, age // 3600))
+
+        # review backlog while the router writes nothing: it is probably deep in one long turn and the
+        # router nudges queue behind it unseen (11-06 EVB: 16 unreviewed, router silent 50 min) -> coordinator
+        quiet = _age(now, router_last.get(lid))
+        if unrev_old and unrev_all >= ESCALATE_UNREVIEWED_N and quiet is not None and quiet > ROUTER_QUIET_S \
+                and live_bad in (None, "wsl_unknown"):
+            cinfo = ((live or {}).get("coordinators") or {}).get(str(line.get("core"))) or {}
+            rh = (((live or {}).get("routers") or {}).get(lid) or {}).get("handle") or line.get("router")
+            ekey = "unrev_escalate:%s" % lid
+            if cinfo.get("present") is True and cinfo.get("handle") and cinfo["handle"] != rh \
+                    and _repeat_due(nudges, "unreviewed_escalated", ekey, ABSENT_GAP_S, now):
+                findings.append({"line": lid, "code": "unreviewed_escalated", "unreviewed": unrev_all,
+                                 "router_quiet_min": int(quiet // 60)})
+                text = ("[巡检] %s 线有 %d 个交付没审（最早 %.1f 小时前交），router %s 已 %d 分钟没写任何记录，"
+                        "可能在一轮长任务里，发给它的未审催办排在后面看不到。请看一眼它的屏幕：需要就打断它先审、"
+                        "给 PARTIAL 排后续节点，或者你代审（progress review --line %s …）。") % (
+                    lid, unrev_all, max(unrev_old) / 3600, rh, quiet // 60, lid)
+                actions.append({"type": "alert", "line": lid, "target": cinfo["handle"], "text": text[:900],
+                                "keys": [(lid, ekey, "unreviewed_escalated")], "label": "审查积压，通知协调人："})
 
         # router gone / rebound: tell the core coordinator (the router cannot be told)
         rinfo_l = ((live or {}).get("routers") or {}).get(lid) or {}

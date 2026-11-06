@@ -161,6 +161,42 @@ class ResourceAlerts(Base):
         self.assertEqual(sorted(t for t, _ in s), sorted([C1, R]))
 
 
+class UnreviewedEscalation(Base):
+    """11-06 EVB: 16 deliveries unreviewed while the router sat in one long turn; nudges to it went unseen."""
+    def setUp(self):
+        super().setUp()
+        for i, n in enumerate("abc"):
+            self.add(plan_ev("L", n, auto_dispatch=False),
+                     {"kind": "node_deliver", "line": "L", "node": n, "outcome": "PARTIAL", "summary": "d",
+                      "actor": {"role": "router", "handle": R}, "at": at(180 - 30 * i)})
+
+    def sends_to(self, fr, h):
+        return [c[c.index("--text") + 1] for c in fr.kinds("send") if c[c.index("--terminal") + 1] == h]
+
+    def test_backlog_and_quiet_router_tells_coordinator_once(self):
+        self.put_live(lv(0))
+        fr = FakeRunner()
+        out = self.run_patrol(fr)
+        to_c = self.sends_to(fr, C1)
+        self.assertEqual(len(to_c), 1)
+        for part in ("L 线有 3 个交付没审", R, "120 分钟", "progress review --line L"):
+            self.assertIn(part, to_c[0])
+        self.assertTrue(any(f["code"] == "unreviewed_escalated" for f in out["findings"]))
+        fr = FakeRunner()
+        self.put_live(lv(60))
+        self.run_patrol(fr, minutes_later=60)
+        self.assertEqual(self.sends_to(fr, C1), [])
+
+    def test_router_writing_records_is_not_escalated(self):
+        self.add({"kind": "node_review", "line": "L", "node": "a", "outcome": "PASS", "summary": "ok",
+                  "actor": {"role": "router", "handle": R}, "at": at(10)})
+        self.put_live(lv(0))
+        fr = FakeRunner()
+        out = self.run_patrol(fr)
+        self.assertEqual(self.sends_to(fr, C1), [])
+        self.assertFalse(any(f["code"] == "unreviewed_escalated" for f in out["findings"]))
+
+
 class AbsentRouter(Base):
     def setUp(self):
         super().setUp()
