@@ -318,8 +318,39 @@ class AlertsSync(unittest.TestCase):
         self.fr = r
         self.sync({"fu:fu_1": "FE 线：请给端点"}, 0)
         self.sync({}, 1)
+        self.assertEqual(len(r.sent), 1)             # gone: waits FU_GONE_S for a reworded comeback first
+        self.sync({}, 2.1)
         self.assertEqual(len(r.sent), 2)
         self.assertTrue(r.sent[-1].startswith("[不用再管] FE 线：请给端点（"))
+
+    def test_reworded_human_request_merges_without_new_send(self):
+        r = self.runner()
+        self.fr = r
+        a = "EVB 线：请在 Instabox 启动 ib-agent-2，供 EVB 继续独立综合校准；不恢复该机器，面积与功耗模型的独立校准无法继续。"
+        b = "EVB 线：请在 Instabox 恢复 ib-agent-2，或说明目前无法恢复的原因；在机器恢复并通过资源检查前，EVB 无法继续独立面积与功耗校准。"
+        self.sync({"fu:fu_a": a}, 0)
+        self.sync({}, 0.5)                          # dropped out: no "[不用再管]" yet
+        self.sync({"fu:fu_b": b}, 0.8)               # reworded comeback: same ask, nothing new sent
+        self.assertEqual(len(r.sent), 1)
+        st = alerts.load()
+        self.assertEqual((st["fu:fu_b"]["same_as"], st["fu:fu_b"]["sends"]), ("fu:fu_a", 1))
+        self.assertEqual(st["fu:fu_a"]["merged_into"], "fu:fu_b")
+        self.sync({"fu:fu_b": b}, 2.1)               # reminder pacing continues from the first send
+        self.assertEqual(len(r.sent), 2)
+        self.assertIn("已持续 2 小时", r.sent[-1])
+        self.sync({"fu:fu_b": b}, 3)
+        self.assertEqual(len(r.sent), 2)             # the merged-away key never says "[不用再管]"
+
+    def test_different_human_requests_of_a_line_stay_apart(self):
+        r = self.runner()
+        self.fr = r
+        self.sync({"fu:fu_a": "EVB 线：请在 Instabox 启动 ib-agent-2，供 EVB 继续独立综合校准"}, 0)
+        self.sync({"fu:fu_a": "EVB 线：请在 Instabox 启动 ib-agent-2，供 EVB 继续独立综合校准",
+                   "fu:fu_c": "EVB 线：请决定是否批准 B8 的第五次单次增量构建；未获批准，四个 CG 实跑不能继续"}, 0.5)
+        self.assertEqual(len(r.sent), 2)
+        self.assertTrue(r.sent[-1].startswith("[需要你看] EVB 线：请决定"))
+        self.sync({"fu:fu_x": "FE 线：请在 Instabox 启动 ib-agent-2，供 EVB 继续独立综合校准"}, 0.6)   # other line
+        self.assertEqual(len(r.sent), 3)
 
     def test_new_reminders_max_and_resolve(self):
         r = self.runner()

@@ -9,6 +9,12 @@ sync(active, now, runner, qq) is called once per patrol round with {key: text} o
   silent but kept while it stays active).
 - key no longer active but was sent: send once "[已恢复] <first line of text>" and mark it resolved ("[不用再管] …"
   for a supervisor request to the human, key "fu:…").
+- Requests to the human ("fu:…") are reworded by the supervisor and come back under a new key. A new fu key whose
+  text is close to another unresolved fu record of the same line (difflib ratio >= FU_SAME) takes over that record
+  (first_at, sends: same reminder pacing) and nothing new is sent; the old record is closed silently. A fu key that
+  drops out waits FU_GONE_S before its "[不用再管]" goes out, so a reworded comeback merges instead.
+  (11-06: the Instabox ask went "[不用再管]" at 22:34 and "[需要你看]" reworded at 22:52; FE/SR/NEWP asks were sent
+  twice under two wordings.)
 - At most ONE QQ message per round: every due text is merged into one list (<= MAX_CHARS); texts that do not
   fit stay due and go out next round. A failed send changes no state, so it is retried next round.
 - qq.json missing -> nothing is sent or recorded; with something active the record is {"code": "qq_unconfigured"}.
@@ -17,6 +23,7 @@ Uses decide.send_qq (same qq.json, same HERMES_BIN). Never raises.
 from __future__ import annotations
 
 import datetime as _dt
+import difflib
 import json
 import os
 import pathlib
@@ -32,6 +39,8 @@ REMIND_H = (2, 8, 24)          # resend this long after first_at; len + 1 = max 
 MAX_CHARS = 1500
 ITEM_MAX = 300
 KEEP_RESOLVED_S = 7 * 86400
+FU_SAME = 0.5                  # 11-07 history: rewordings of one ask 0.55-0.98, different asks of a line <= 0.43
+FU_GONE_S = 60 * 60
 
 
 def path() -> pathlib.Path:
@@ -79,6 +88,35 @@ def _due(rec: Dict[str, Any], now: _dt.datetime) -> bool:
     return first is not None and (now - first).total_seconds() >= REMIND_H[sends - 1] * 3600
 
 
+def _fu_line(text: str) -> str:
+    return str(text or "").split("线：", 1)[0] if "线：" in str(text or "") else ""
+
+
+def _fu_merge(active: Dict[str, str], state: Dict[str, Dict[str, Any]], now: _dt.datetime) -> None:
+    """New fu keys that reword an unresolved fu record of the same line take that record over (in place)."""
+    for key in sorted(active):
+        rec = state.get(key)
+        if not key.startswith("fu:") or (rec is not None and not rec.get("resolved_at")):
+            continue
+        text = str(active[key])
+        best, score = None, FU_SAME
+        for old, orec in state.items():
+            if old == key or not old.startswith("fu:") or orec.get("resolved_at") or not int(orec.get("sends") or 0):
+                continue
+            otext = str(orec.get("text") or "")
+            if not _fu_line(text) or _fu_line(text) != _fu_line(otext):
+                continue
+            r = difflib.SequenceMatcher(None, text, otext).ratio()
+            if r >= score:
+                best, score = old, r
+        if best is None:
+            continue
+        orec = state[best]
+        state[key] = {"first_at": orec.get("first_at"), "last_sent_at": orec.get("last_sent_at"),
+                      "sends": orec.get("sends"), "text": text, "resolved_at": None, "same_as": best}
+        orec["resolved_at"], orec["merged_into"] = _iso(now), key
+
+
 def sync(active: Dict[str, str], now: _dt.datetime, runner, qq: Optional[Dict[str, str]]) -> List[Dict[str, Any]]:
     """-> records [{key, kind: new|remind|resolved, text, sent, error?}] or [{code: qq_unconfigured}]."""
     try:
@@ -93,10 +131,13 @@ def _sync(active: Dict[str, str], now: _dt.datetime, runner, qq: Optional[Dict[s
             return []
         return [{"code": "qq_unconfigured", "why": "~/.progress/qq.json 缺失：告警不会发到 QQ"}]
     state = load()
+    _fu_merge(active, state, now)
     items: List[Dict[str, Any]] = []   # due messages, in send order: new, remind, resolved
     for key in sorted(active):
         text = str(active[key])
         rec = state.get(key)
+        if rec is not None:
+            rec.pop("gone_at", None)
         if rec is None or rec.get("resolved_at"):
             items.append({"key": key, "kind": "new", "text": text, "line": "[需要你看] " + _clip(text)})
         elif _due(rec, now):
@@ -108,6 +149,13 @@ def _sync(active: Dict[str, str], now: _dt.datetime, runner, qq: Optional[Dict[s
     for key in sorted(state):
         rec = state[key]
         if key not in active and int(rec.get("sends") or 0) >= 1 and not rec.get("resolved_at"):
+            if key.startswith("fu:"):
+                gone = core.parse_iso(rec.get("gone_at"))
+                if gone is None:
+                    rec["gone_at"] = _iso(now)
+                    continue
+                if (now - gone).total_seconds() < FU_GONE_S:
+                    continue
             first = _first_line(rec.get("text") or key)
             # a request to the human that dropped out: say it is no longer needed, not that "it recovered" (which
             # read as if the human's answer had arrived)
