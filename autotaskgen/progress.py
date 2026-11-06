@@ -219,7 +219,7 @@ def check_proposal(pid, ev):
     state = core.fold(project, core.read_events(pid))
     errs = [e["error"] for e in core.validate(dict(ev, project=pid), project, state)]
     res = graph.gate(ev["proposal"], project, state)
-    for e in res["errors"]:
+    for e in res["errors"] + (core.same_acceptance_errors(res["normalized"]) if not res["errors"] else []):
         if e not in errs:
             errs.append(e)
     if errs:

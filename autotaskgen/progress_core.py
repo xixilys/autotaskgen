@@ -457,6 +457,25 @@ def _push_field_errors(event: Dict[str, Any]) -> List[str]:
     return []
 
 
+def same_acceptance_errors(normalized: Dict[str, Any]) -> List[str]:
+    """Parallel segments the gate downgraded because siblings share the very same acceptance criteria. That is a
+    writing slip, not structure: rejected so the router writes each node its own criteria (or marks the segment
+    serial) before anything is committed. 11-06/07: SR and NEWP committed such segments, saw them turned serial,
+    and cancelled and re-proposed (4 cancels in 45 min). Overlapping write scopes / inner deps still downgrade."""
+    out = []
+    for seg in (normalized or {}).get("segments") or []:
+        if seg.get("downgraded_from") != "parallel":
+            continue
+        kids = seg.get("nodes") or []
+        for i in range(len(kids)):
+            for j in range(i + 1, len(kids)):
+                a, b = kids[i], kids[j]
+                if a.get("acceptance") and a.get("acceptance") == b.get("acceptance"):
+                    out.append("段 %s 标为 parallel，但 %s 与 %s 验收标准完全相同，不能各自验收：给每个节点写只属于它的验收"
+                               "（它自己的产物、测试或报告），或者把这段标成 serial" % (seg.get("id"), a.get("id"), b.get("id")))
+    return out
+
+
 def append(pid: str, event: Dict[str, Any]) -> Dict[str, Any]:
     """Validate against the current state and append under an exclusive lock."""
     d = project_dir(pid)
@@ -490,6 +509,9 @@ def append(pid: str, event: Dict[str, Any]) -> Dict[str, Any]:
         if event.get("kind") == "graph_propose":
             res = _graph.gate(dict(event["proposal"], line=event.get("line"),
                                    parent=event.get("node") or event["proposal"].get("parent")), project, state)
+            same = same_acceptance_errors(res["normalized"])
+            if same:
+                raise ProgressError("gate_rejected", "子图提议未通过闸门：共 %d 条问题" % len(same), errors=same)
             event["proposal"] = res["normalized"]
             event["children"] = res["children"]
             warnings = res["warnings"]

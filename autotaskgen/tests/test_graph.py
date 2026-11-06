@@ -283,6 +283,21 @@ class Cli(GBase):
         self.assertTrue(any("验收标准" in e for e in errs) and any("依据" in e for e in errs) and any("重复" in e for e in errs))
         self.assertEqual(core.read_events("t"), [])
 
+    def test_parallel_same_acceptance_rejected_before_commit(self):
+        f = self.write(proposal(("a", "parallel", [child("x", acc=["全部测试通过"]), child("y", acc=["全部测试通过"])])))
+        rc, out = self.run_cli("propose", f, "--check")
+        self.assertEqual((rc, out["code"]), (2, "gate_rejected"))
+        self.assertTrue(any("验收标准完全相同" in e for e in out["detail"]["errors"]))
+        rc, out = self.run_cli("propose", f, "--as", R)
+        self.assertEqual((rc, out["code"]), (2, "gate_rejected"))
+        self.assertTrue(any("标成 serial" in e for e in out["detail"]["errors"]))
+        self.assertEqual(core.read_events("t"), [])
+        # overlapping write scopes are structure, not a slip: still committed, downgraded to serial with a warning
+        f = self.write(proposal(("a", "parallel", [child("x", scope=["src/s"]), child("y", scope=["src/s"])])))
+        rc, out = self.run_cli("propose", f, "--as", R)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["segments"][0].get("downgraded_from"), "parallel")
+
     def test_propose_stdin_and_flags_override(self):
         doc = proposal(("a", "serial", [child("x")]))
         doc.pop("line")
