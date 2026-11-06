@@ -822,13 +822,39 @@ def monitoring_alerts(live: Optional[Dict[str, Any]], live_bad: Optional[str]) -
     return out
 
 
-def human_wait_lifted(events: List[Dict[str, Any]], line: str, since: Optional[str]) -> bool:
+HUMAN_LIFT_MATCH = 0.17   # 11-07 history: a block and the ask it answers overlap 0.19-0.67; unrelated pairs <= 0.15
+_LIFT_STOP = None
+
+
+def _lift_grams(text: Any) -> set:
+    """ASCII words (>= 3 chars) and CJK character pairs, minus filler words common to any request."""
+    global _LIFT_STOP
+    t = str(text or "").lower()
+    cjk = "".join(re.findall(r"[\u4e00-\u9fff]", t))
+    g = set(re.findall(r"[a-z0-9_]{3,}", t)) | {cjk[i:i + 2] for i in range(len(cjk) - 1)}
+    if _LIFT_STOP is None:
+        _LIFT_STOP = set()
+        _LIFT_STOP = _lift_grams("等待请提供确认继续无法不能缺少如果需要")
+    return g - _LIFT_STOP
+
+
+def lift_matches(ask: Any, block_summary: Any) -> bool:
+    a, b = _lift_grams(ask), _lift_grams(block_summary)
+    return bool(a and b) and len(a & b) / float(min(len(a), len(b))) >= HUMAN_LIFT_MATCH
+
+
+def human_wait_lifted(events: List[Dict[str, Any]], line: str, since: Optional[str],
+                      text: Optional[str] = None) -> bool:
     """True when, on `line`, a node blocked on the human got a later event (unblocked, re-blocked on something
     else, dispatched ...) at or after `since`, and no node of the line is blocked on the human any more.
     11-06: the coordinator settled the Jacobi inputs at 05:49 and the router lifted the human block at 06:01, but
     the follow-up only closes at terra's recheck (08:03), so the 07:21 QQ reminder asked the user for inputs
-    already given."""
+    already given.
+    With `text` (the ask), only a lifted block whose summary is about the same thing counts (lift_matches).
+    11-06/07: EVB marks waits for a coordinator ruling as blocker=human; each lift of such a block dropped the
+    unrelated Instabox ask ("[不用再管]" at 22:34, dropped again at 23:25) while it was still needed."""
     human: Dict[str, bool] = {}
+    why: Dict[str, str] = {}
     lifted = False
     for e in events:
         if e.get("line") != line or not e.get("node") or not str(e.get("kind") or "").startswith("node_"):
@@ -836,10 +862,11 @@ def human_wait_lifted(events: List[Dict[str, Any]], line: str, since: Optional[s
         nid, at = e["node"], e.get("at") or ""
         if e.get("kind") == "node_block" and e.get("blocker") == "human":
             human[nid] = True
+            why[nid] = str(e.get("summary") or "")
             continue
         if human.get(nid):
             human[nid] = False
-            if since and at >= since:
+            if since and at >= since and (text is None or lift_matches(text, why.get(nid))):
                 lifted = True
     return lifted and not any(human.values())
 
@@ -866,7 +893,7 @@ def followup_alerts(project: Dict[str, Any], now: _dt.datetime,
         if ca is not None and ca > now and not (e.get("tries") or e.get("human")):
             continue
         if e.get("to") == "human" and events and e.get("line") and \
-                human_wait_lifted(events, e["line"], e.get("sent_at") or e.get("created_at")):
+                human_wait_lifted(events, e["line"], e.get("sent_at") or e.get("created_at"), e.get("text")):
             continue
         out["fu:%s" % e["id"]] = _short("%s 线：%s" % (e.get("line") or "?", e.get("text") or ""), 300)
     return out

@@ -258,7 +258,8 @@ class AlertBuilding(CloseBase):
 
     def test_human_ask_dropped_once_line_lifts_human_block(self):
         import patrol
-        ev = [{"kind": "node_block", "line": "L", "node": "n1", "blocker": "human", "at": "2026-11-06T05:31:00Z"},
+        ev = [{"kind": "node_block", "line": "L", "node": "n1", "blocker": "human", "at": "2026-11-06T05:31:00Z",
+               "summary": "Jacobi初态grid/RHS/边界实值、精度/终止未定由协调补齐"},
               {"kind": "node_block", "line": "L", "node": "n1", "blocker": "dep", "at": "2026-11-06T06:01:00Z"}]
         self.assertTrue(patrol.human_wait_lifted(ev, "L", "2026-11-06T05:03:00Z"))
         self.assertFalse(patrol.human_wait_lifted(ev, "L", "2026-11-06T06:30:00Z"))  # lifted before the ask
@@ -266,7 +267,8 @@ class AlertBuilding(CloseBase):
         still = ev + [{"kind": "node_block", "line": "L", "node": "n2", "blocker": "human", "at": "2026-11-06T06:10:00Z"}]
         self.assertFalse(patrol.human_wait_lifted(still, "L", "2026-11-06T05:03:00Z"))  # another node still waits on the human
         self.assertFalse(patrol.human_wait_lifted(ev[:1], "L", "2026-11-06T05:03:00Z"))  # never lifted
-        st = {"followups": {"fu_h": {"id": "fu_h", "line": "L", "to": "human", "text": "请给输入", "check_at": at(-60),
+        st = {"followups": {"fu_h": {"id": "fu_h", "line": "L", "to": "human", "check_at": at(-60),
+                                     "text": "请提供或确认 Jacobi 64³ 的初始 grid 实值或 input_ref、执行精度",
                                      "human": True, "sent_at": "2026-11-06T05:03:00Z"}}}
         cache = snap.load_task_cache()
         cache["supervisor:t"] = st
@@ -274,6 +276,18 @@ class AlertBuilding(CloseBase):
         now = core.parse_iso("2026-11-06T07:21:00Z")
         self.assertEqual(patrol.followup_alerts({"id": "t"}, now, ev), {})
         self.assertIn("fu:fu_h", patrol.followup_alerts({"id": "t"}, now, ev[:1]))
+
+    def test_human_ask_kept_when_an_unrelated_human_block_lifts(self):
+        import patrol
+        ask = "EVB 线：请在 Instabox 恢复 ib-agent-2，或说明目前无法恢复的原因；在机器恢复并通过资源检查前，EVB 无法继续独立面积与功耗校准。"
+        ev = [{"kind": "node_block", "line": "EVB", "node": "cg16", "blocker": "human", "at": "2026-11-06T23:17:00Z",
+               "summary": "H内部批效果sidecar及固定投影等核心一裁定；已获答复继续独立日志修复与两点估算"},
+              {"kind": "node_dispatch", "line": "EVB", "node": "cg16", "at": "2026-11-06T23:18:00Z"}]
+        self.assertFalse(patrol.human_wait_lifted(ev, "EVB", "2026-11-06T22:34:45Z", ask))
+        self.assertTrue(patrol.human_wait_lifted(ev, "EVB", "2026-11-06T22:34:45Z"))   # without the ask: line level
+        self.assertTrue(patrol.lift_matches("FE 线：请带回真实评估器首个回复、明确端点和实际调用授权",
+                                            "等待人类带回真实评估器首回复、明确端点和实际调用授权；三项齐备后才启动"))
+        self.assertFalse(patrol.lift_matches(ask, "构建前唯一SConscript差异为shared已去旧FabricSliceDevice注册，等确认保留"))
 
     def test_dry_run_sends_nothing(self):
         self.put_live(live(minutes_ago=50, workers=[]))
