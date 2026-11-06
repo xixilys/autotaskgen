@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>进度看板</title>
+<link rel="stylesheet" href="style.css">
+<script>
+  try { var q = /[?&]theme=(light|dark)/.exec(location.search); var t = q ? q[1] : localStorage.getItem("pb-theme"); if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+</script>
+</head>
+<body>
+<svg class="defs" width="0" height="0" aria-hidden="true" focusable="false">
+  <defs>
+    <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="6" height="6" class="hatch-bg"></rect>
+      <line x1="0" y1="0" x2="0" y2="6" class="hatch-ln"></line>
+    </pattern>
+    <pattern id="hatch-grey" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(135)">
+      <line x1="0" y1="0" x2="0" y2="8" class="hatch-grey-ln"></line>
+    </pattern>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="3" result="b"></feGaussianBlur>
+      <feMerge><feMergeNode in="b"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
+    </filter>
+  </defs>
+</svg>
+
+<header class="top">
+  <a class="brand" href="#/" aria-label="回到项目总览">
+    <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+      <circle cx="16" cy="16" r="13" class="brand-o"></circle>
+      <path d="M16 3 A13 13 0 0 1 29 16" class="brand-a"></path>
+      <circle cx="16" cy="16" r="4" class="brand-c"></circle>
+    </svg>
+    <span>进度看板</span>
+  </a>
+  <nav class="crumbs" id="crumbs"></nav>
+  <div class="top-right">
+    <span class="conn" id="conn" data-state="connecting" title="实时更新连接状态"><i></i><b>连接中</b></span>
+    <button class="icon-btn" id="theme-btn" type="button" aria-label="切换深浅色">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"></path></svg>
+    </button>
+  </div>
+</header>
+
+<main id="app" aria-live="polite"></main>
+
+<div class="selbar" id="selbar" hidden></div>
+<div class="tip" id="tip" role="tooltip" hidden></div>
+<svg class="links" id="links" aria-hidden="true"></svg>
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" aria-hidden="true" tabindex="-1">
+  <button class="icon-btn drawer-x" id="drawer-x" type="button" aria-label="关闭详情">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+  </button>
+  <div id="drawer-body"></div>
+</aside>
+
+<script src="app.js"></script>
+</body>
+</html>

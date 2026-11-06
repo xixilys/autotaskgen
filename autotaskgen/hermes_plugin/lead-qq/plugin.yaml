@@ -1,0 +1,7 @@
+name: lead-qq
+version: 1.1.0
+description: "Owner QQ DMs addressed to the project lead (负责人 … / L<n> …) go to <LEAD_ROOT>/<project>/inbox.jsonl and wake the lead session (docs/LEAD.md)."
+author: "autotaskgen"
+kind: standalone
+provides_hooks:
+  - pre_gateway_dispatch

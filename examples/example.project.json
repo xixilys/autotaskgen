@@ -1,0 +1,30 @@
+{
+ "schema": "progress-project/v1",
+ "id": "demo",
+ "name": "Example research project",
+ "final_goal": {
+  "text": "Agents propose a design, an evaluator scores it, agents revise; repeat until the target is met",
+  "done_when": "Written into the milestones below by the core coordinators"
+ },
+ "humans": ["term_00000000-0000-0000-0000-000000000001"],
+ "cores": [
+  {"id": "core1", "name": "Evaluator", "coordinator": "term_00000000-0000-0000-0000-000000000011"},
+  {"id": "core2", "name": "Agent loop", "coordinator": "term_00000000-0000-0000-0000-000000000012"}
+ ],
+ "lines": [
+  {"id": "EVAL", "name": "Evaluator core", "core": "core1", "router": "term_00000000-0000-0000-0000-000000000101",
+   "state_file": "docs/router-EVAL/STATE.md", "status": "active"},
+  {"id": "DATA", "name": "Benchmark set", "core": "core1", "router": "term_00000000-0000-0000-0000-000000000102",
+   "state_file": "docs/router-DATA/STATE.md", "status": "active"},
+  {"id": "AGENT", "name": "Proposal agent", "core": "core2", "router": "term_00000000-0000-0000-0000-000000000103",
+   "state_file": "docs/router-AGENT/STATE.md", "status": "active"}
+ ],
+ "milestones": [
+  {"id": "M1", "title": "Evaluator scores one real design end to end", "core": "core1", "lines": ["EVAL"], "after": [],
+   "done_when": "One design from the benchmark set is scored; an independent review agrees with the numbers"},
+  {"id": "M2", "title": "Benchmark set frozen", "core": "core1", "lines": ["DATA"], "after": [],
+   "done_when": "Benchmark list and expected outputs committed; a held-out part is kept outside every repository"},
+  {"id": "M3", "title": "Closed loop improves a design", "core": "core2", "lines": ["AGENT"], "after": ["M1", "M2"],
+   "done_when": "The agent revises a design using evaluator feedback and the score improves on the held-out part"}
+ ]
+}

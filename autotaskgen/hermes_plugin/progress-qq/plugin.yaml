@@ -1,0 +1,7 @@
+name: progress-qq
+version: 1.0.0
+description: "Takes the owner's QQ replies to progress decision cards (D<n> 选 k / 推翻 / 为什么) into ~/.progress/inbox.jsonl and kicks patrol."
+author: "autotaskgen"
+kind: standalone
+provides_hooks:
+  - pre_gateway_dispatch

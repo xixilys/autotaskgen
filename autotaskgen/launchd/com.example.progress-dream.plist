@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.progress-dream</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/you/.progress/bin/dream.py</string>
+    <string>--project</string>
+    <string>dse</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/you/.local/bin:/Volumes/remote/Applications/Orca.app/Contents/Resources/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PROGRESS_REPO_BRANCH</key>
+    <string>your-branch</string>
+    <key>ORCA_BIN</key>
+    <string>/Volumes/remote/Applications/Orca.app/Contents/Resources/bin/orca</string>
+    <key>PROGRESS_REMOTE</key>
+    <string>wsl</string>
+    <key>PROGRESS_REPO</key>
+    <string>/Users/you/project/repo</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>4</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/you/.progress/log/dream.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/.progress/log/dream.err.log</string>
+</dict>
+</plist>

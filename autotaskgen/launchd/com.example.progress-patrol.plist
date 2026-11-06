@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>ORCA_BIN</key>
+		<string>/Volumes/remote/Applications/Orca.app/Contents/Resources/bin/orca</string>
+		<key>PATH</key>
+		<string>/Volumes/remote/Applications/Orca.app/Contents/Resources/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>PROGRESS_REMOTE</key>
+		<string>wsl</string>
+		<key>PROGRESS_REMOTE_REPO</key>
+		<string>/home/you/project/repo</string>
+		<key>PROGRESS_REPO</key>
+		<string>/Users/you/project/repo</string>
+		<key>PROGRESS_REPO_BRANCH</key>
+		<string>your-branch</string>
+		<key>PROGRESS_WT_ROOT</key>
+		<string>/home/you/worktrees/</string>
+	</dict>
+	<key>Label</key>
+	<string>com.example.progress-patrol</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>/Users/you/.progress/bin/patrol.py</string>
+		<string>--project</string>
+		<string>dse</string>
+		<string>--apply</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>/Users/you/.progress/log/patrol.err.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/you/.progress/log/patrol.out.log</string>
+	<key>StartInterval</key>
+	<integer>900</integer>
+</dict>
+</plist>

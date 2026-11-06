@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template (docs/LEAD.md "Install"). Replace YOUR_HOME, YOUR_PROJECT and the label prefix, copy to
+     ~/Library/LaunchAgents/, then `launchctl bootstrap gui/$(id -u) <plist>`. The label must match lead-qq's
+     "wake_label" so a QQ message can kick it. Stop without unloading: touch ~/.lead/<project>/WAKE_OFF. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.example.lead-wake</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>YOUR_HOME/.lead/bin/lead_wake.py</string>
+		<string>--project</string>
+		<string>YOUR_PROJECT</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>YOUR_HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>LEAD_ROOT</key>
+		<string>YOUR_HOME/.lead</string>
+	</dict>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardOutPath</key>
+	<string>YOUR_HOME/.lead/log/launchd.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>YOUR_HOME/.lead/log/launchd.err.log</string>
+</dict>
+</plist>
