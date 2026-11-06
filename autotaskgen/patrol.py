@@ -186,6 +186,8 @@ IDLE_WT_H = 3                 # worktree cleanup: untouched (events and files) t
 WT_RM_PER_ROUND = 20
 WT_SCAN_MAX = 2 * WT_RM_PER_ROUND   # worktrees inspected over ssh per round
 WT_SKIP_H = 24                # a worktree found broken / missing is not rescanned for this long (keeps scan slots free)
+WT_HELD_H = 6                 # one scanned and kept (dirty, ignored files, recent files, HEAD only here) waits this long; 11-07:
+                              # 16 dirty ones were rescanned every round and took the slots of 40 never-scanned ones (104 G)
 WT_TERMINAL = ("reviewed", "superseded", "cancelled", "failed")
 SNIPPET_MARKER = "<!-- progress-worker -->"
 # Embedded copy of skills/progress-worker/SPEC_SNIPPET.md (the deployed ~/.progress/bin has no skills dir);
@@ -1265,7 +1267,7 @@ def wt_scan_script(paths: List[str], cutoff: _dt.datetime) -> str:
     for p in paths:
         q = shlex.quote(p)
         parts.append(
-            'p=%s; echo "@@WT $p"; if [ ! -e "$p" ]; then echo MISSING; else '
+            'p=%s; echo "@@WT $p"; if [ -L "$p" ]; then echo "LINK $(readlink "$p")"; elif [ ! -e "$p" ]; then echo MISSING; else '
             'echo "NEWER $(find "$p" -maxdepth 3 -newermt @%d -print -quit 2>/dev/null | head -1)"; '
             'st=$(git -C "$p" status --porcelain --untracked-files=all 2>&1); echo "GITRC $?"; '
             'echo "DIRTY $(printf %%s "$st" | head -c 200 | tr "\\n" "|")"; '
@@ -1298,6 +1300,8 @@ def wt_verdict(info: Dict[str, str]) -> Tuple[str, str]:
     """Condition 4 plus the mtime part of 2, from one scan block -> ("remove"|"broken"|"skip", reason)."""
     if "MISSING" in info:
         return "skip", "目录已不存在"
+    if "LINK" in info:   # someone moved it elsewhere (e.g. an archive disk) and left a link: takes no space here, never touched
+        return "skip", "已移走，这里只剩链接（指向 %s）" % (info.get("LINK") or "?")
     if info.get("NEWER"):
         return "skip", "文件 %d 小时内有改动" % IDLE_WT_H
     if info.get("GITRC") != "0" or not info.get("HEAD") or not info.get("GITDIR") or not info.get("COMMON"):
@@ -1335,7 +1339,8 @@ def plan_wt_cleanup(project: Dict[str, Any], state: Dict[str, Any], events: List
     # rescanned, so they do not eat the scan slots of the candidates behind them every round
     skip = skip if skip is not None else {}
     for k in [k for k, v in skip.items()
-              if _age(now, (v or {}).get("at")) is None or _age(now, (v or {}).get("at")) >= WT_SKIP_H * 3600]:
+              if _age(now, (v or {}).get("at")) is None
+              or _age(now, (v or {}).get("at")) >= float((v or {}).get("h") or WT_SKIP_H) * 3600]:
         skip.pop(k, None)
     ready = [r for r in pre if r["ok"] and r["path"] not in skip][:WT_SCAN_MAX]
     info: Dict[str, Dict[str, str]] = {}
@@ -1355,6 +1360,10 @@ def plan_wt_cleanup(project: Dict[str, Any], state: Dict[str, Any], events: List
             row["size_gb"] = round(int(du) / 1048576.0, 1) if du and du.isdigit() else None
             if v == "broken" or why == "目录已不存在":
                 skip[r["path"]] = {"verdict": "broken" if v == "broken" else "missing", "why": why, "at": snap.iso(now)}
+            elif "LINK" in info[r["path"]]:
+                skip[r["path"]] = {"verdict": "moved", "why": why, "at": snap.iso(now)}
+            elif v == "skip":
+                skip[r["path"]] = {"verdict": "held", "why": why, "at": snap.iso(now), "h": WT_HELD_H}
             if v == "broken":
                 res["broken"] += 1
             if v == "remove":
@@ -1362,7 +1371,8 @@ def plan_wt_cleanup(project: Dict[str, Any], state: Dict[str, Any], events: List
                 row["head"] = info[r["path"]].get("HEAD") or None
         elif r["ok"] and r["path"] in skip:
             row.update(verdict=skip[r["path"]]["verdict"] if skip[r["path"]]["verdict"] == "broken" else "skip",
-                       why="%s（%s 时记下，%d 小时内不重扫）" % (skip[r["path"]].get("why"), skip[r["path"]].get("at"), WT_SKIP_H))
+                       why="%s（%s 时记下，%s 小时内不重扫）" % (skip[r["path"]].get("why"), skip[r["path"]].get("at"),
+                                                           skip[r["path"]].get("h") or WT_SKIP_H))
             if row["verdict"] == "broken":
                 res["broken"] += 1
         elif r["ok"]:

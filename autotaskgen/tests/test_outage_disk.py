@@ -580,6 +580,32 @@ class WtBlocked(WtBase):
         out, fr = self.go(FakeRunner())
         self.assertTrue(rm_calls(fr))
 
+    def test_kept_after_scan_waits_six_hours_so_others_get_the_slots(self):
+        out, fr = self.go(FakeRunner(wt_scan={WT: {"DIRTY": "?? notes.txt|"}}))
+        self.assertEqual(patrol.load_patrol_state("t")["wt_skip"][WT]["verdict"], "held")
+        out, fr = self.go(FakeRunner())   # now clean, but within 6 h: not rescanned, kept
+        self.assertFalse([c for c in fr.calls if c and "@@WT" in c[-1]])
+        self.assertKept(fr)
+        self.assertIn("6 小时内不重扫", out["wt_cleanup"]["candidates"][0]["why"])
+        self.assertEqual(out["wt_cleanup"]["candidates"][0]["verdict"], "skip")
+        pst = patrol.load_patrol_state("t")
+        pst["wt_skip"][WT]["at"] = "2026-11-01T00:00:00Z"
+        patrol.save_patrol_state("t", pst)
+        out, fr = self.go(FakeRunner())
+        self.assertTrue(rm_calls(fr))
+
+    def test_moved_away_link_is_skipped_not_broken(self):
+        out, fr = self.go(FakeRunner(wt_scan={WT: {"LINK": "/mnt/archive/wt"}}))
+        self.assertKept(fr)
+        row = out["wt_cleanup"]["candidates"][0]
+        self.assertEqual(row["verdict"], "skip")
+        self.assertIn("已移走", row["why"])
+        self.assertEqual(out["wt_cleanup"]["broken"], 0)
+        self.assertNotIn("worktree_broken", [f["code"] for f in out["findings"]])
+        self.assertEqual(patrol.load_patrol_state("t")["wt_skip"][WT]["verdict"], "moved")
+        s = patrol.wt_scan_script(["/x/workspaces/a"], dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc))
+        self.assertLess(s.index('[ -L "$p" ]'), s.index("git -C"))
+
     def test_broken_git_is_listed_not_removed(self):
         out, fr = self.go(FakeRunner(wt_scan={WT: {"GITRC": "128", "HEAD": "", "GITDIR": "", "COMMON": ""}}))
         self.assertKept(fr)

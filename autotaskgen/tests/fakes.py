@@ -84,6 +84,9 @@ class FakeRunner:
                     path = path.strip("'")
                     out += "@@WT %s\n" % path
                     info = dict(WT_CLEAN, **(self.wt_scan.get(path) or {}))
+                    if info.get("LINK"):
+                        out += "LINK %s\n" % info["LINK"]
+                        continue
                     if info.get("MISSING"):
                         out += "MISSING\n"
                         continue
