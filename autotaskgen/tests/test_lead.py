@@ -288,8 +288,20 @@ class Glance(Base):
     def test_glance_without_any_data_still_prints(self):
         out = lead.glance_text(self.ctx())
         self.assertIn("没有项目档案", out)
-        self.assertIn("live.json 取不到", out)
+        # 11-07: on the Mac with board_host empty the line must say what to set, not just "not found"
+        self.assertIn("读不到在跑快照", out)
+        self.assertIn("在跑 worker 数未知", out)
+        self.assertIn("board_host", out)
         self.assertEqual(self.runner.calls, [])
+
+    def test_glance_board_host_unreachable_names_the_ssh_read(self):
+        os.environ["LEAD_BOARD_HOST"] = "boardbox"
+        try:
+            out = lead.glance_text(self.ctx())
+        finally:
+            del os.environ["LEAD_BOARD_HOST"]
+        self.assertIn("ssh boardbox cat .progress/", out)
+        self.assertIn("在跑 worker 数未知", out)
 
 
 class Init(Base):
@@ -308,6 +320,18 @@ class Init(Base):
         lead.init(c, {"terminal": "term_x"}, {}, str(tpl))
         self.assertEqual((pathlib.Path(c.home) / "BOOT.md").read_text(), "mine")
         self.assertEqual(lead.load_json(c.config_path)["worktree"], "/w")
+
+    def test_init_warns_when_live_cannot_be_found(self):
+        import contextlib, io, types
+        tpl = pathlib.Path(self.tmp.name) / "BOOT.tpl"
+        tpl.write_text("x\n", encoding="utf-8")
+        c = lead.Ctx.load("fresh", runner=self.runner, clock=self.clock)
+        args = types.SimpleNamespace(terminal="", worktree="/w", board_host="", set=[], template=str(tpl),
+                                     force=False, no_git=True)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            lead.cmd_init(c, args)
+        self.assertIn("WARNING: board_host is empty", buf.getvalue())
 
     def test_repo_template_has_only_known_placeholders(self):
         text = (HERE.parent / "templates" / "lead" / "BOOT.md").read_text(encoding="utf-8")

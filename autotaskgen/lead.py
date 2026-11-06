@@ -349,6 +349,16 @@ def unread(rows):
     return [m for m in rows if m.get("dir") == "in" and not m.get("acked")]
 
 
+def live_missing_hint(ctx):
+    """One line saying where live.json was looked for and what to set (11-07: on the Mac with board_host empty the
+    「现在」section was easy to miss as gone)."""
+    if ctx.board_host:
+        return "== 现在：读不到在跑快照（ssh %s cat %s/%s/live.json 失败或文件不存在），在跑 worker 数未知" % (
+            ctx.board_host, ctx.board_progress_home, ctx.pid)
+    return ("== 现在：读不到在跑快照 %s，在跑 worker 数未知。看板在另一台机器上就在 config.json 设 board_host"
+            "（例如 \"wsl\"）或设环境变量 LEAD_BOARD_HOST" % os.path.join(ctx.progress_home, ctx.pid, "live.json"))
+
+
 def glance_text(ctx):
     path, d = latest_dossier(ctx)
     lines = dossier_lines(ctx, path, d) if d else ["== 没有项目档案（%s）" % ctx.dossier_glob]
@@ -356,8 +366,7 @@ def glance_text(ctx):
     if live:
         lines += live_lines(ctx, live)
     else:
-        lines.append("== live.json 取不到（%s）" % ("ssh " + ctx.board_host if ctx.board_host else
-                                                 os.path.join(ctx.progress_home, ctx.pid, "live.json")))
+        lines.append(live_missing_hint(ctx))
     rows = read_jsonl(ctx.ledger)
     op = [r for r in rows if r.get("status") == "open"]
     due = due_rows(ctx, rows)
@@ -644,6 +653,10 @@ def cmd_init(ctx, a):
     except OSError as e:
         sys.exit("lead init: %s (pass --template or set LEAD_TEMPLATE)" % e)
     print("initialised %s" % ctx.home)
+    if not ctx.board_host and not os.path.exists(os.path.join(ctx.progress_home, ctx.pid, "live.json")):
+        print("WARNING: board_host is empty and %s does not exist: glance will show no running workers. If the board"
+              " runs on another machine, re-run with --board-host <ssh host> or set board_host in %s"
+              % (os.path.join(ctx.progress_home, ctx.pid, "live.json"), ctx.config_path))
     if left:
         print("BOOT.md placeholders still to fill: " + ", ".join("{%s}" % x for x in left))
 

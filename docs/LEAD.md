@@ -172,6 +172,9 @@ lead-qq 插件的配置在 `<LEAD_ROOT>/lead-qq.json`（或 `LEAD_QQ_CONFIG` 指
         --template templates/lead/BOOT.md --set goal_doc=<目标文件> repo=<仓库> branch=<分支> tz=<时区> \
         kb_dir=<知识库目录> holdout_dir=<留出集路径> board_url=<看板地址> framework_contact=<框架维护会话>
    ```
+   **看板（live.json）不在负责人这台机器上时必须给 `--board-host <ssh 主机>`**（或之后在 config.json 设 `board_host`）。
+   不设时 glance 只读本机 `<progress_home>/<pid>/live.json`，读不到就没有在跑数，只有一行"读不到在跑快照"的提示；
+   `lead init` 遇到这种情况会打一条 WARNING。（11-07：Mac 上的负责人换成仓库版后，因为没设这一项，glance 少了"现在"一节。）
 3. launchd：复制 `autotaskgen/launchd/com.example.lead-wake.plist`，把 `YOUR_HOME`、`YOUR_PROJECT` 和 Label 换成自己的，
    放进 `~/Library/LaunchAgents/` 后 `launchctl bootstrap gui/$(id -u) <plist>`。先 `python3 ~/.lead/bin/lead_wake.py --project <pid> --force`
    手动试一次。
