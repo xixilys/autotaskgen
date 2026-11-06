@@ -96,7 +96,7 @@ def project_summary(pid: str) -> Dict[str, Any]:
     workers = None
     if live is not None and isinstance(live.get("workers"), list):
         workers = [{"model": w.get("model"), "line": w.get("line"), "host": w.get("host"),
-                    "router": w.get("router"), "core": w.get("core")}
+                    "router": w.get("router"), "core": w.get("core"), "phase": core.worker_phase(w)}
                    for w in live["workers"] if isinstance(w, dict)]
     ms = []
     for m in doc.get("milestones") or []:
@@ -110,7 +110,9 @@ def project_summary(pid: str) -> Dict[str, Any]:
         "lines": len(doc.get("lines") or []),
         "cores": [{"id": c.get("id"), "name": c.get("name")} for c in doc.get("cores") or []],
         "running_nodes": sum((ln.get("counts") or {}).get("running", 0) for ln in st["lines"].values()),
-        "running_workers": len(workers) if workers is not None else None,
+        "running_workers": None if workers is None else sum(1 for w in workers if w["phase"] == "running"),
+        "lingering_workers": None if workers is None else sum(1 for w in workers if w["phase"] == "lingering"),
+        "idle_workers": None if workers is None else sum(1 for w in workers if w["phase"] == "idle"),
         "workers": workers,
         "live_at": lv["live_at"], "live_stale": lv["live_stale"],
         "last_event_at": last, "event_count": st["event_count"],

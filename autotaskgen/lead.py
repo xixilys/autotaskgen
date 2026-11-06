@@ -301,15 +301,29 @@ def dossier_lines(ctx, path, d):
     return lines
 
 
+def worker_phase(w):
+    """Same rule as progress_core.worker_phase (lead.py stays standalone): running = busy and task not settled."""
+    if w.get("lingering") is True:
+        return "lingering"
+    return "running" if w.get("busy") is True else "idle"
+
+
 def live_lines(ctx, live):
     ws = live.get("workers") or []
-    ws = ws if isinstance(ws, list) else []
-    by = {}
+    ws = [w for w in ws if isinstance(w, dict)] if isinstance(ws, list) else []
+    by = {"running": {}, "idle": {}, "lingering": {}}
     for w in ws:
         k = w.get("line") or w.get("router") or "?"
-        by[k] = by.get(k, 0) + 1
-    lines = ["== 现在（live %s）：在跑 worker %d 个 %s" % (ctx.show(live.get("generated_at")), len(ws),
-                                                    json.dumps(by, ensure_ascii=False))]
+        b = by[worker_phase(w)]
+        b[k] = b.get(k, 0) + 1
+    n = {p: sum(v.values()) for p, v in by.items()}
+    head = "== 现在（live %s）：在跑 worker %d 个 %s（只数屏幕在忙且任务没结束的）" % (
+        ctx.show(live.get("generated_at")), n["running"], json.dumps(by["running"], ensure_ascii=False))
+    if n["idle"]:
+        head += "；停着 %d 个 %s（任务没结束、屏幕空闲或不明）" % (n["idle"], json.dumps(by["idle"], ensure_ascii=False))
+    if n["lingering"]:
+        head += "；已结束还开着 %d 个 %s（不算在跑）" % (n["lingering"], json.dumps(by["lingering"], ensure_ascii=False))
+    lines = [head]
     for host, r in sorted((live.get("resources") or {}).items()):
         if not isinstance(r, dict):
             continue

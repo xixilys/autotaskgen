@@ -96,8 +96,10 @@ class ServerTest(unittest.TestCase):
         core.save_live("t", {"schema": "progress-live/v1", "generated_at": iso(minutes_ago),
                              "hosts": {"wsl": "ok", "ib-agent": "unknown"},
                              "routers": {"L": {"present": True}},
-                             "workers": [{"host": "wsl", "model": "codex/gpt-6.1-sol", "line": "L", "node": "a"},
-                                         {"host": "wsl", "model": "x", "line": None, "node": None}]})
+                             "workers": [{"host": "wsl", "model": "codex/gpt-6.1-sol", "line": "L", "node": "a", "busy": True},
+                                         {"host": "wsl", "model": "x", "line": None, "node": None},
+                                         {"host": "wsl", "model": "x", "line": "L", "node": "b", "busy": False,
+                                          "lingering": True}]})
 
     def put_sup(self, minutes_ago):
         core.save_supervisor("t", {"schema": "progress-supervisor/v1", "generated_at": iso(minutes_ago),
@@ -215,7 +217,9 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(p["id"], "t")
         self.assertEqual(p["progress"], {"total": 2, "confirmed": 0, "claimed": 1})
         self.assertEqual(p["lines"], 1)
-        self.assertEqual(p["running_workers"], 2)
+        # 11-07: only busy workers whose task is not settled count as 在跑; the others are listed apart
+        self.assertEqual((p["running_workers"], p["idle_workers"], p["lingering_workers"]), (1, 1, 1))
+        self.assertEqual([w["phase"] for w in p["workers"]], ["running", "idle", "lingering"])
         self.assertFalse(p["live_stale"])
 
     def test_projects_missing_live_is_unknown_not_zero(self):
@@ -239,7 +243,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(j["state"]["lines"]["L"]["nodes"]["a"]["status"], "running")
         self.assertEqual(j["state"]["milestones"]["M1"]["status"], "claimed")
         self.assertFalse(j["live_stale"])
-        self.assertEqual(len(j["live"]["workers"]), 2)
+        self.assertEqual(len(j["live"]["workers"]), 3)
 
     def test_state_missing_live(self):
         st, j = self.getj("/api/p/t/state")

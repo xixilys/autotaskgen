@@ -417,13 +417,18 @@
     if (p.live_stale || p.workers == null) {
       dots = '<span class="lab">在跑</span>' + (p.live_at ? '<span class="badge-stale" title="最后快照 ' + esc(when(p.live_at)) + '">过期</span>' : '<span class="badge-unknown">未知</span>');
     } else {
-      var ws = p.workers.slice().sort(function (a, b) {
+      // 在跑 = screen busy and Orca task not settled (server sets phase); older servers send no phase: count all
+      var ws = p.workers.filter(function (w) { return !w.phase || w.phase === "running"; }).sort(function (a, b) {
         return TIERS.indexOf(tierOf(a.model)) - TIERS.indexOf(tierOf(b.model));
       });
+      var ling = p.workers.filter(function (w) { return w.phase === "lingering"; }).length;
+      var idle = p.workers.filter(function (w) { return w.phase === "idle"; }).length;
       dots = '<span class="lab">在跑 ' + ws.length + "</span>" + ws.map(function (w) {
         var t = tierOf(w.model);
         return '<i class="wdot' + (w.line ? "" : " unattr") + '" style="color:' + tierColor(t.id) + '" title="' + esc(t.name + (w.line ? " · " + w.line : w.router ? " · 由 router 派出" : " · 未归属") + " · " + (w.host || "未知机器")) + '"></i>';
-      }).join("");
+      }).join("") +
+        (idle ? '<span class="lab" title="任务没结束，但屏幕空闲或状态不明">停着 ' + idle + "</span>" : "") +
+        (ling ? '<span class="lab" title="任务已结束、终端还开着，不算在跑">已结束仍在 ' + ling + "</span>" : "");
     }
     return '<div class="panel card' + (sel ? " sel" : "") + '" data-open="' + esc(p.id) + '" tabindex="0" role="link" aria-label="打开 ' + esc(p.name) + '">' +
       '<button class="sel-btn" type="button" data-sel="' + esc(p.id) + '" aria-pressed="' + sel + '" aria-label="选中以并排查看"><svg width="14" height="14" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg></button>' +

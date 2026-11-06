@@ -271,7 +271,9 @@ class Glance(Base):
             "parallel": {"A": {"avg": 0.4, "zero_share": 0.7}}, "flags": [{"level": "warn", "to": "core1", "text": "A 零并发"}]},
             ensure_ascii=False))
         (pdir / "live.json").write_text(json.dumps({"generated_at": "2026-01-10T07:55:00Z",
-                                                    "workers": [{"line": "A"}, {"line": "A"}],
+                                                    "workers": [{"line": "A", "busy": True}, {"line": "A", "busy": True},
+                                                                {"line": "B", "busy": False, "lingering": True},
+                                                                {"line": "B"}],
                                                     "resources": {"hostx": {"disks": [{"mount": "/", "avail_gb": 90}],
                                                                             "mem_avail_gb": 40}}}))
         c = self.ctx()
@@ -279,7 +281,7 @@ class Glance(Base):
         load_plugin().append(str(self.home), {"dir": "in", "at": "2026-01-10T07:58:00Z", "text": "进展如何"})
         out = lead.glance_text(c)
         for s in ("M2 已 30 小时没有确认", "S1 条目 2/5", "M2(缺3/4)", "A 0.4/70%", "[warn→core1] A 零并发",
-                  "在跑 worker 2 个", "hostx：可用内存 40G，盘 / 90G", "未结 1 条，到期待查 1 条：L1",
+                  "在跑 worker 2 个 {\"A\": 2}", "停着 1 个 {\"B\": 1}", "已结束还开着 1 个 {\"B\": 1}（不算在跑）", "hostx：可用内存 40G，盘 / 90G", "未结 1 条，到期待查 1 条：L1",
                   "未处理 1 条", "[I1 01-10 07:58] 进展如何"):
             self.assertIn(s, out)
 

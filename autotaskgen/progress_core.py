@@ -83,6 +83,15 @@ def now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def worker_phase(w: Dict[str, Any]) -> str:
+    """One live.json worker: 'running' = screen busy and its Orca task not settled; 'lingering' = task settled,
+    terminal still open; 'idle' = task not settled but the screen is not busy (at a prompt, stalled, or unknown).
+    Only 'running' counts as 在跑 (11-07 lead: 13 counted, 3 actually busy). Same rule in lead.py."""
+    if w.get("lingering") is True:
+        return "lingering"
+    return "running" if w.get("busy") is True else "idle"
+
+
 def parse_iso(text: Optional[str]) -> Optional[_dt.datetime]:
     if not text:
         return None
