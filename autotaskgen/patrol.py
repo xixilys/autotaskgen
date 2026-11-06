@@ -1175,6 +1175,7 @@ def project_fill(pts: List[List[Any]], crit_gb: Optional[float] = None) -> Optio
 # ------------------------------------------------------------ strict worktree cleanup (user 11-06, --apply only)
 
 WT_PATH_RE = re.compile(r"^/[A-Za-z0-9_./+-]+$")
+WT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")   # a bare worktree name: no "/" so no "..", no traversal
 # ignored files that are safe to lose with a worktree (regenerable caches); anything else ignored blocks removal
 WT_REGEN_RE = r"(^|/)(__pycache__|\\.pytest_cache|\\.mypy_cache|\\.ruff_cache)(/|$)|\\.py[co]$"
 
@@ -1203,7 +1204,12 @@ def wt_dispatch_map(events: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             continue
         path = ref.split("::", 1)[-1].rstrip("/")
         if not path.startswith("/"):
-            continue
+            # patrol's own auto_dispatch records the bare worktree name it asked Orca for (worktree_name());
+            # Orca creates it directly under the workspaces dir. 11-07: 47 such worktrees (119 G) were invisible here.
+            root = os.environ.get("PROGRESS_WT_ROOT")
+            if not root or not WT_NAME_RE.match(path):
+                continue
+            path = root.rstrip("/") + "/" + path
         ent = out.setdefault(path, {"nodes": set(), "last": None})
         if e.get("line") and e.get("node"):
             ent["nodes"].add((e["line"], e["node"]))

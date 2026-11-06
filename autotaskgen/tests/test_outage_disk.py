@@ -633,3 +633,32 @@ class WtBlocked(WtBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WtBareName(unittest.TestCase):
+    """11-07: patrol's auto_dispatch records only the worktree name; 47 such worktrees (119 G) were never cleaned."""
+    def ev(self, ref, node="n"):
+        return {"kind": "auto_dispatch", "line": "L", "node": node, "at": "2026-11-04T08:00:00Z", "refs": {"worktree": ref}}
+
+    def setUp(self):
+        self.saved = os.environ.get("PROGRESS_WT_ROOT")
+
+    def tearDown(self):
+        if self.saved is None:
+            os.environ.pop("PROGRESS_WT_ROOT", None)
+        else:
+            os.environ["PROGRESS_WT_ROOT"] = self.saved
+
+    def test_bare_name_resolves_under_wt_root(self):
+        os.environ["PROGRESS_WT_ROOT"] = ROOT + "/"
+        m = patrol.wt_dispatch_map([self.ev("l-n-p11061536"), self.ev("id::%s/abs" % ROOT, "m")])
+        self.assertEqual(sorted(m), [ROOT + "/abs", ROOT + "/l-n-p11061536"])
+        self.assertEqual(m[ROOT + "/l-n-p11061536"]["nodes"], {("L", "n")})
+        self.assertTrue(patrol.wt_root_ok(ROOT + "/l-n-p11061536"))
+
+    def test_bare_name_skipped_without_root_or_when_unsafe(self):
+        os.environ.pop("PROGRESS_WT_ROOT", None)
+        self.assertEqual(patrol.wt_dispatch_map([self.ev("l-n-p11061536")]), {})
+        os.environ["PROGRESS_WT_ROOT"] = ROOT
+        for bad in ("..", "../etc", "a/b", ".hidden", "", "x y"):
+            self.assertEqual(patrol.wt_dispatch_map([self.ev(bad)]), {}, bad)
