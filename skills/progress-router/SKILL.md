@@ -9,7 +9,7 @@ description: router（主线协调、子 router）在排节点、派 worker、�
 巡检员每 30 分钟会查看你和你的 worker，收到它的建议按建议处理。
 `--summary` 必填，白话一句，不超过 120 字。命令返回 `"ok": false` 时按 `code` 改参数重写，不要跳过；返回 `"queued": true` 表示已进本地队列，会自动补发，不用重试。
 
-- **等人的节点一律标 `--blocker human`**：只有人能给的东西（授权、真实端点、材料、目标或完成标准的决定）用 `progress block --blocker human`，不要标成 `dep`；巡检按这个字段统计等人时长，并把它列给人类。
+- **等人的节点一律标 `--blocker human`**：只有人能给的东西（授权、真实端点、材料、目标或完成标准的决定）用 `progress block --blocker human`，不要标成 `dep`；巡检按这个字段统计等人时长，并把它列给人类。**等协调人或 router 的裁定、批准、GO（"新 source 计划获批后"、"精确 GO"、预算、算力、机器、调用额度）标 `design`，不标 `human`**：human 会被发到人的 QQ 上，标错了就是让人去回答协调人该答的事。
 
 - **开工前、以及中断、换终端、上下文压缩后**，先运行 `progress-inspect resume --line <线>`（或读 `~/.progress/<项目>/resume/<线>.md`）：核对未完成节点、最近裁决和未落实跟进，经验里写了的规则照做，再接着排节点。收到 `[接续]` 消息也是这样做。
 
