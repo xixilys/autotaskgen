@@ -74,7 +74,7 @@ class Base(unittest.TestCase):
         os.environ["PROGRESS_HOME"] = str(root / "progress")
         self.home = root / "lead" / self.PID
         self.home.mkdir(parents=True)
-        self.write_conf({"terminal": "term_lead-1", "worktree": str(root / "wt"), "utc_offset_h": 0})
+        self.write_conf({"discussion_terminal": "term_lead-1", "worktree": str(root / "wt"), "utc_offset_h": 0})
         self.clock = Clock()
         self.runner = Runner()
 
@@ -309,15 +309,15 @@ class Init(Base):
         tpl = pathlib.Path(self.tmp.name) / "BOOT.tpl"
         tpl.write_text("项目 {project}，目录 {state_dir}，命令 `{lead} glance`，目标 {goal_doc}，{keep}\n", encoding="utf-8")
         c = lead.Ctx.load("fresh", runner=self.runner, clock=self.clock)
-        left = lead.init(c, {"worktree": "/w", "terminal": ""}, {"goal_doc": "docs/GOAL.md"}, str(tpl))
+        left = lead.init(c, {"worktree": "/w", "discussion_terminal": ""}, {"goal_doc": "docs/GOAL.md"}, str(tpl))
         self.assertEqual(left, ["keep"])
         text = (pathlib.Path(c.home) / "BOOT.md").read_text(encoding="utf-8")
         self.assertEqual(text, "项目 fresh，目录 %s，命令 `lead glance`，目标 docs/GOAL.md，{keep}\n" % c.home)
         conf = lead.load_json(c.config_path)
-        self.assertEqual((conf["worktree"], conf["terminal"], conf["interval_s"]), ("/w", "", 7200))
+        self.assertEqual((conf["worktree"], conf["discussion_terminal"], conf["interval_s"]), ("/w", "", 7200))
         self.assertEqual(self.runner.find("init")[0][:3], ["git", "-C", c.home])
         (pathlib.Path(c.home) / "BOOT.md").write_text("mine")
-        lead.init(c, {"terminal": "term_x"}, {}, str(tpl))
+        lead.init(c, {"discussion_terminal": "term_x"}, {}, str(tpl))
         self.assertEqual((pathlib.Path(c.home) / "BOOT.md").read_text(), "mine")
         self.assertEqual(lead.load_json(c.config_path)["worktree"], "/w")
 
@@ -342,16 +342,21 @@ class Init(Base):
             self.assertIn(word, text.replace("--done-when", "done_when"))
 
 
-def orca_rules(show=None, idle=True, launch=None, send_ok=True, tail=None):
+def orca_rules(launch=None, tail=None, close_ok=True):
+    """Fake orca: each `agent launch` answers the next handle of `launch` (default term_r1, term_r2, ...)."""
     def ans(obj):
         return 0, json.dumps(obj), ""
+    handles = list(launch if launch is not None else ["term_r%d" % i for i in range(1, 10)])
+
+    def do_launch(argv):
+        if not handles:
+            return ans({"ok": False, "error": {"message": "boom"}})
+        return ans({"ok": True, "result": {"outcome": {"kind": "terminal"}, "terminal": {"handle": handles.pop(0)}}})
     return [
-        (lambda a: a[1:3] == ["terminal", "read"], ans({"ok": True, "result": {"terminal": {"tail": tail or ["\u276f\xa0"]}}})),
-        (lambda a: a[1:3] == ["terminal", "show"], ans(show if show is not None else
-                                                     {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": "claude"}}})),
-        (lambda a: a[1:3] == ["terminal", "wait"], ans({"ok": True, "result": {"wait": {"satisfied": idle}}})),
-        (lambda a: a[1:3] == ["agent", "launch"], ans(launch or {"ok": False})),
-        (lambda a: a[1:3] == ["terminal", "send"], ans({"ok": send_ok, "result": {"status": "input_accepted"}})),
+        (lambda a: a[1:3] == ["terminal", "read"], ans({"ok": True, "result": {"terminal": {"tail": tail or ["❯\xa0"]}}})),
+        (lambda a: a[1:3] == ["terminal", "show"], ans({"ok": True, "result": {"terminal": {"connected": True}}})),
+        (lambda a: a[1:3] == ["terminal", "close"], ans({"ok": close_ok})),
+        (lambda a: a[1:3] == ["agent", "launch"], do_launch),
     ]
 
 
@@ -378,154 +383,173 @@ class WakeDecision(unittest.TestCase):
 
 
 class Wake(Base):
+    DISC = "term_lead-1"
+
     def waker(self, now):
         return lead_wake.Waker(self.ctx(), sleep=lambda s: None, now=now)
 
-    def sends(self):
-        return [c[c.index("--text") + 1] for c in self.runner.calls if c[1:3] == ["terminal", "send"]]
+    def at(self, minutes):
+        return T0.timestamp() + 60 * minutes
 
-    def test_idle_terminal_gets_clear_then_prompt(self):
+    def calls(self, *words):
+        return [c for c in self.runner.calls if c[1:1 + len(words)] == list(words)]
+
+    def out(self):
+        return [m for m in lead.read_jsonl(str(self.home / "inbox.jsonl")) if m["dir"] == "out"]
+
+    def wake(self):
+        return lead.load_json(str(self.home / "wake.json"), {})
+
+    def start_cycle(self, minutes, state="running"):
+        t = lead.dt.datetime.fromtimestamp(self.at(minutes), lead.dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lead.save_json(str(self.home / "cycle.json"), {"state": state, "started": t, "n": 9})
+
+    def tearDown(self):
+        # the discussion terminal is never written to, cleared or closed, in any scenario
+        for c in self.runner.calls:
+            self.assertFalse(c[1:3] in (["terminal", "send"], ["terminal", "close"]) and self.DISC in c, c)
+        self.assertEqual(self.calls("terminal", "send"), [])
+        super().tearDown()
+
+    def test_force_launches_a_fresh_round_with_the_prompt(self):
         self.runner.rules = orca_rules()
         os.environ["ORCA_BIN"] = "/fake/orca"
-        r = self.waker(T0.timestamp()).run()
-        self.assertEqual(r, {"action": "woke", "reason": "timer", "handle": "term_lead-1"})
-        texts = self.sends()
-        self.assertEqual(texts[0], "/clear")
-        self.assertIn("唤醒原因：timer", texts[1])
-        self.assertIn(str(self.home / "BOOT.md").replace(os.path.expanduser("~"), "~"), texts[1])
-        self.assertIn("`lead cycle start --reason timer`", texts[1])
-        self.assertTrue(all(c[0] == "/fake/orca" and c[-1] == "--json" for c in self.runner.calls))
-        st = lead.load_json(str(self.home / "wake.json"))
-        self.assertEqual((st["last_wake"], st["last_reason"]), (T0.timestamp(), "timer"))
-        r = self.waker(T0.timestamp() + 60).run()
-        self.assertEqual(r, {"action": "skip", "why": "not_due"})
-
-    def test_inbox_wake_and_custom_prompt(self):
-        self.runner.rules = orca_rules()
-        self.write_conf({"terminal": "term_lead-1", "wake_prompt": "go {project} {reason} {boot} {lead}",
-                         "lead_cmd": "lead --project demo"})
-        lead.save_json(str(self.home / "wake.json"), {"last_wake": T0.timestamp() - 700})
-        load_plugin().append(str(self.home), {"dir": "in", "text": "hi"})
-        r = self.waker(T0.timestamp()).run()
-        self.assertEqual(r["reason"], "inbox")
-        self.assertTrue(self.sends()[1].startswith("go demo inbox "))
-        self.assertTrue(self.sends()[1].endswith(" lead --project demo"))
-
-    def test_running_cycle_and_wake_off_and_busy_skip(self):
-        self.runner.rules = orca_rules(idle=False)
-        lead.save_json(str(self.home / "cycle.json"), {"state": "running", "started": "2026-01-10T07:30:00Z", "n": 4})
-        self.assertEqual(self.waker(T0.timestamp()).run()["why"], "running")
-        self.assertEqual(self.runner.calls, [])
-        (self.home / "WAKE_OFF").write_text("")
-        self.assertEqual(self.waker(T0.timestamp()).run()["why"], "wake_off")
-        self.assertEqual(self.waker(T0.timestamp()).run(force=True)["why"], "running")
-        os.remove(str(self.home / "WAKE_OFF"))
-        lead.save_json(str(self.home / "cycle.json"), {"state": "done", "started": "2026-01-10T07:30:00Z", "n": 4})
-        r = self.waker(T0.timestamp()).run()
-        self.assertEqual(r["why"], "busy")
-        self.assertEqual(self.sends(), [])
-        self.assertEqual(lead.load_json(str(self.home / "wake.json"))["busy_since"], T0.timestamp())
-
-    def test_stale_running_cycle_does_not_block(self):
-        self.runner.rules = orca_rules()
-        lead.save_json(str(self.home / "cycle.json"), {"state": "running", "started": "2026-01-09T20:00:00Z", "n": 4})
-        self.assertEqual(self.waker(T0.timestamp()).run()["action"], "woke")
-
-    def test_missing_terminal_is_relaunched_and_saved(self):
-        self.runner.rules = orca_rules(show={"ok": False}, launch={"ok": True, "result": {"terminal": {"handle": "term_new-2"}}})
-        r = self.waker(T0.timestamp()).run()
-        self.assertEqual((r["action"], r["handle"]), ("woke", "term_new-2"))
-        launch = self.runner.find("launch")[0]
+        r = self.waker(self.at(0)).run(force=True)
+        self.assertEqual(r, {"action": "launched", "reason": "manual", "handle": "term_r1", "attempt": 1,
+                             "closed_prev": False})
+        (launch,) = self.calls("agent", "launch")
+        self.assertEqual(launch[launch.index("--surface") + 1], "terminal")
         self.assertEqual(launch[launch.index("--agent") + 1], "claude")
         self.assertEqual(launch[launch.index("--worktree") + 1], "path:" + str(pathlib.Path(self.tmp.name) / "wt"))
-        self.assertEqual(lead.load_json(str(self.home / "config.json"))["terminal"], "term_new-2")
-        self.assertEqual(lead.load_json(str(self.home / "config.json"))["utc_offset_h"], 0)
-        self.assertNotIn("/clear", self.sends())                         # a fresh session needs no /clear
-        out = [m for m in lead.read_jsonl(str(self.home / "inbox.jsonl")) if m["dir"] == "out"]
-        self.assertEqual(len(out), 1)                                    # alert attempted (qq unconfigured, logged)
-        self.assertIn("term_new-2", out[0]["text"])
-        self.assertTrue(out[0]["text"].startswith("[负责人] "))
+        prompt = launch[launch.index("--prompt") + 1]
+        self.assertIn("唤醒原因：manual", prompt)
+        self.assertIn("`lead cycle start --reason manual`", prompt)
+        self.assertTrue(all(c[0] == "/fake/orca" and c[-1] == "--json" for c in self.runner.calls))
+        st = self.wake()
+        self.assertEqual((st["round_terminal"], st["round_launched_at"], st["round_attempt"], st["last_reason"]),
+                         ("term_r1", self.at(0), 1, "manual"))
+        self.assertEqual(self.calls("terminal", "close"), [])
+
+    def test_previous_round_terminal_is_closed_before_the_next(self):
+        self.runner.rules = orca_rules()
+        self.waker(self.at(0)).run(force=True)
+        self.start_cycle(1, "done")
+        self.assertEqual(self.waker(self.at(60)).run()["why"], "not_due")
+        r = self.waker(self.at(121)).run()
+        self.assertEqual((r["action"], r["reason"], r["handle"], r["closed_prev"]), ("launched", "timer", "term_r2", True))
+        (close,) = self.calls("terminal", "close")
+        self.assertEqual(close[close.index("--terminal") + 1], "term_r1")
+        self.assertIn("--tab", close)
+
+    def test_inbox_message_starts_a_round_after_the_gap(self):
+        self.runner.rules = orca_rules()
+        self.write_conf({"discussion_terminal": self.DISC, "worktree": "/wt", "wake_prompt": "go {project} {reason}"})
+        lead.save_json(str(self.home / "wake.json"), {"last_wake": self.at(-11)})
+        load_plugin().append(str(self.home), {"dir": "in", "text": "hi"})
+        r = self.waker(self.at(0)).run()
+        self.assertEqual(r["reason"], "inbox")
+        launch = self.calls("agent", "launch")[0]
+        self.assertEqual(launch[launch.index("--prompt") + 1], "go demo inbox")
+
+    def test_running_cycle_skips_and_a_stale_one_is_replaced(self):
+        self.runner.rules = orca_rules()
+        self.waker(self.at(0)).run(force=True)
+        self.start_cycle(1)
+        self.assertEqual(self.waker(self.at(130)).run()["why"], "running")
+        self.assertEqual(len(self.calls("agent", "launch")), 1)
+        r = self.waker(self.at(1 + 181)).run()                          # running for 3 h: stale
+        self.assertEqual((r["action"], r["closed_prev"]), ("launched", True))
+        self.assertEqual(len(self.out()), 1)
+        self.assertIn("还没结束", self.out()[0]["text"])
+
+    def test_watchdog_relaunches_once_then_alerts_once(self):
+        tail = ["─" * 9 + " scan ─", "❯\xa0Message @x…"]
+        self.runner.rules = orca_rules(tail=tail)
+        self.waker(self.at(0)).run(force=True)
+        self.assertEqual(self.waker(self.at(10)).run()["why"], "not_due")
+        r = self.waker(self.at(16)).run()                               # 15 min, no cycle: close and relaunch once
+        self.assertEqual((r["action"], r["attempt"], r["handle"], r["closed_prev"]), ("launched", 2, "term_r2", True))
+        self.assertEqual(self.out(), [])                                # the first failure does not page the owner
+        self.assertEqual(self.waker(self.at(30)).run()["why"], "not_due")
+        r = self.waker(self.at(32)).run()                               # the relaunch did not start either
+        self.assertEqual(r, {"action": "alerted", "why": "no_cycle_twice"})
+        self.assertEqual(len(self.out()), 1)
+        self.assertIn("连续两次", self.out()[0]["text"])
+        self.assertIn("子代理「scan」", self.out()[0]["text"])
+        self.waker(self.at(37)).run()
+        self.waker(self.at(60)).run()
+        self.assertEqual(len(self.out()), 1)                            # once
+        self.assertEqual(len(self.calls("agent", "launch")), 2)
+        r = self.waker(self.at(16 + 121)).run()                         # next timer: a fresh first attempt
+        self.assertEqual((r["action"], r["attempt"], r["handle"]), ("launched", 1, "term_r3"))
+
+    def test_round_that_starts_its_cycle_is_left_alone(self):
+        self.runner.rules = orca_rules()
+        self.waker(self.at(0)).run(force=True)
+        self.start_cycle(2)
+        self.assertEqual(self.waker(self.at(20)).run()["why"], "not_due")
+        self.assertEqual(self.waker(self.at(20)).run(force=True)["why"], "running")
+        self.start_cycle(2, "done")
+        self.assertEqual(self.waker(self.at(40)).run()["why"], "not_due")
+        self.assertEqual(self.calls("terminal", "close"), [])
+
+    def test_a_starting_round_blocks_another_launch(self):
+        self.runner.rules = orca_rules()
+        lead.save_json(str(self.home / "wake.json"), {"last_wake": self.at(-11)})
+        load_plugin().append(str(self.home), {"dir": "in", "text": "hi"})
+        self.waker(self.at(-130)).run(force=True)
+        st = self.wake()
+        st.update({"round_launched_at": self.at(-5), "last_wake": self.at(-11)})
+        lead.save_json(str(self.home / "wake.json"), st)
+        self.assertEqual(self.waker(self.at(0)).run()["why"], "starting")
+
+    def test_wake_off_pauses_everything_but_force(self):
+        self.runner.rules = orca_rules()
+        (self.home / "WAKE_OFF").write_text("")
+        self.assertEqual(self.waker(self.at(0)).run()["why"], "wake_off")
+        self.assertEqual(self.waker(self.at(5)).run()["why"], "wake_off")
+        self.assertEqual(self.calls("agent", "launch"), [])
+        log = (pathlib.Path(os.environ["LEAD_ROOT"]) / "log" / "wake.log").read_text(encoding="utf-8")
+        self.assertEqual(log.count("WAKE_OFF present"), 1)              # logged once per pause
+        lead.save_json(str(self.home / "wake.json"), {"round_terminal": "term_r0", "round_launched_at": self.at(-30),
+                                                      "round_reason": "timer", "last_wake": self.at(-30)})
+        self.assertEqual(self.waker(self.at(0)).run()["why"], "wake_off")      # paused: an automatic round is not chased
+        self.assertEqual(self.calls("agent", "launch"), [])
+        self.waker(self.at(0)).run(force=True)
+        r = self.waker(self.at(20)).run()                                      # a hand-started round still is
+        self.assertEqual((r["action"], r["attempt"], r["reason"]), ("launched", 2, "manual"))
+        self.assertEqual(self.waker(self.at(21)).run()["why"], "wake_off")
 
     def test_launch_failure_alerts_once(self):
-        self.runner.rules = orca_rules(show={"ok": False})
-        self.assertEqual(self.waker(T0.timestamp()).run()["why"], "launch_failed")
-        self.assertEqual(self.waker(T0.timestamp() + 300).run()["why"], "launch_failed")
-        out = [m for m in lead.read_jsonl(str(self.home / "inbox.jsonl")) if m["dir"] == "out"]
-        self.assertEqual(len(out), 1)
+        self.runner.rules = orca_rules(launch=[])
+        self.assertEqual(self.waker(self.at(0)).run()["why"], "launch_failed")
+        self.assertEqual(self.waker(self.at(5)).run()["why"], "launch_failed")
+        self.assertEqual(len(self.out()), 1)
+        self.assertNotIn("round_terminal", self.wake())
 
-    def test_other_agent_in_terminal_is_refused(self):
-        self.runner.rules = orca_rules(show={"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": "codex"}}})
-        self.assertEqual(self.waker(T0.timestamp()).run()["why"], "wrong_agent")
-        self.assertEqual(self.sends(), [])
-
-    def test_subagent_view_is_skipped_and_alerted_once(self):
-        sub = ["\u2500" * 20 + " Daily literature scan 11-07 \u2500", "\u276f\xa0Message @general-purpose\u2026",
-               "\u2500" * 40]
-        self.runner.rules = orca_rules(tail=sub)
-        r = self.waker(T0.timestamp()).run()
-        self.assertEqual((r["action"], r["why"]), ("skip", "subagent_view"))
-        self.assertEqual(self.sends(), [])                               # neither /clear nor the prompt
-        self.assertNotIn("last_wake", lead.load_json(str(self.home / "wake.json")))
-        self.assertEqual(self.waker(T0.timestamp() + 300).run()["why"], "subagent_view")
-        out = [m for m in lead.read_jsonl(str(self.home / "inbox.jsonl")) if m["dir"] == "out"]
-        self.assertEqual(len(out), 1)
-        self.assertIn("「Daily literature scan 11-07」", out[0]["text"])
-        self.runner.rules = orca_rules()                                 # back on the main session: wakes again
-        self.assertEqual(self.waker(T0.timestamp() + 600).run()["action"], "woke")
-
-    def test_parked_on_a_subagent_with_text_in_the_box_is_still_caught(self):
-        # 11-07: once "/clear" sat in the box the "Message @" hint was gone; only the titled rule was left
-        tail = ["\u2500" * 50 + " Daily literature scan 11-07 \u2500", "\u276f /clear /clear", "\u2500" * 60,
-                "  [Opus 5.5] \u2502 dse-rsi"]
-        self.assertEqual(lead_wake.prompt_box(tail), ("Daily literature scan 11-07", ""))
-        self.runner.rules = orca_rules(tail=tail)
-        self.assertEqual(self.waker(T0.timestamp()).run()["why"], "subagent_view")
-        self.assertEqual(self.sends(), [])
-        out = [m for m in lead.read_jsonl(str(self.home / "inbox.jsonl")) if m["dir"] == "out"]
-        self.assertIn("切回主会话", out[0]["text"])
+    def test_discussion_terminal_is_never_closed_even_if_recorded_as_a_round(self):
+        self.runner.rules = orca_rules()
+        lead.save_json(str(self.home / "wake.json"), {"round_terminal": self.DISC, "round_launched_at": self.at(-200)})
+        self.start_cycle(-199, "done")
+        r = self.waker(self.at(0)).run()
+        self.assertEqual((r["action"], r["closed_prev"]), ("launched", False))
+        self.assertEqual(self.calls("terminal", "close"), [])
 
     def test_prompt_box_reads_main_session_states(self):
-        rule = "\u2500" * 60
-        self.assertEqual(lead_wake.prompt_box(["done", rule, "\u276f", rule, "  [Opus 5.5]"]), (None, ""))
-        self.assertEqual(lead_wake.prompt_box([rule, "\u276f Try \"fix lint errors\"", rule]), (None, ""))
-        self.assertEqual(lead_wake.prompt_box(["\u276f old prompt in the transcript", "answer", rule,
-                                               "\u276f half typed", "  second line", rule, "  footer"]),
+        rule = "─" * 60
+        self.assertEqual(lead_wake.prompt_box(["done", rule, "❯", rule, "  [Opus 5.5]"]), (None, ""))
+        self.assertEqual(lead_wake.prompt_box([rule, '❯ Try "fix lint errors"', rule]), (None, ""))
+        self.assertEqual(lead_wake.prompt_box(["❯ old prompt in the transcript", "answer", rule,
+                                               "❯ half typed", "  second line", rule, "  footer"]),
                          (None, "half typed second line"))
+        self.assertEqual(lead_wake.prompt_box(["─" * 50 + " Daily literature scan 11-07 ─", "❯ /clear /clear",
+                                               rule]), ("Daily literature scan 11-07", ""))
         self.assertEqual(lead_wake.prompt_box(["no box here"]), (None, ""))
-
-    def test_leftover_input_is_not_glued_to_the_wake(self):
-        rule = "\u2500" * 60
-        self.runner.rules = orca_rules(tail=[rule, "\u276f \u3010\u9879\u76ee\u8d1f\u8d23\u4eba\u4e00\u8f6e", rule])
-        r = self.waker(T0.timestamp()).run()
-        self.assertEqual((r["action"], r["why"]), ("skip", "input_not_empty"))
-        self.assertEqual(self.sends(), [])
-        self.assertEqual(self.waker(T0.timestamp() + 300).run()["why"], "input_not_empty")
-        out = [m for m in lead.read_jsonl(str(self.home / "inbox.jsonl")) if m["dir"] == "out"]
-        self.assertEqual(len(out), 1)                                    # same text: one alert per interval
-        self.assertIn("清空输入框", out[0]["text"])
-        self.runner.rules = orca_rules()
-        self.assertEqual(self.waker(T0.timestamp() + 600).run()["action"], "woke")
-
-    def test_wake_that_did_not_start_a_cycle_is_reported_within_minutes(self):
-        self.runner.rules = orca_rules()
-        self.assertEqual(self.waker(T0.timestamp()).run()["action"], "woke")
-        self.assertEqual(self.waker(T0.timestamp() + 600).run()["why"], "not_due")
-        out = lambda: [m for m in lead.read_jsonl(str(self.home / "inbox.jsonl")) if m["dir"] == "out"]
-        self.assertEqual(out(), [])                                      # still inside the 15-minute gap
-        self.runner.rules = orca_rules(tail=["\u2500" * 9 + " scan \u2500", "\u276f\xa0Message @x\u2026"])
-        self.assertEqual(self.waker(T0.timestamp() + 1200).run()["why"], "not_due")   # not due, still reported
-        self.assertEqual(len(out()), 1)
-        self.assertIn("20 分钟", out()[0]["text"])
-        self.assertIn("子代理「scan」", out()[0]["text"])
-        self.waker(T0.timestamp() + 1500).run()
-        self.assertEqual(len(out()), 1)                                  # once per wake
-        lead.save_json(str(self.home / "cycle.json"), {"state": "done", "started": "2026-01-10T08:01:00Z", "n": 5})
-        self.assertEqual(lead.load_json(str(self.home / "wake.json"))["alerted_nostart"], T0.timestamp())
 
     def test_main_takes_lock_and_runs(self):
         self.runner.rules = orca_rules()
-        r = lead_wake.main(["--project", self.PID], runner=self.runner, sleep=lambda s: None)
-        self.assertEqual(r["action"], "woke")
+        r = lead_wake.main(["--project", self.PID, "--force"], runner=self.runner, sleep=lambda s: None)
+        self.assertEqual(r["action"], "launched")
 
 
 class Plugin(Base):

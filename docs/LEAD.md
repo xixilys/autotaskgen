@@ -29,25 +29,27 @@ live.json、自己的台账和收件箱），**先做、后报**，把每一条�
 | 有未处理的人发来的消息，且距上次唤醒 ≥ `inbox_min_gap_s`（默认 600 秒） | `inbox` |
 | 距上次唤醒 ≥ `interval_s`（默认 7200 秒） | `timer` |
 
-不打断正在进行的一轮：`cycle.json` 是 `running` 且开始不到 `stale_running_s`（默认 3 小时）就跳过；终端不是空闲输入框
-（`orca terminal wait --for tui-idle`）也跳过，忙超过 `busy_alert_s`（默认 4 小时）发一次 QQ。
-发唤醒前先读屏幕最后几行，下面两种情况都不发、马上发一条 QQ 说明原因（同一情况每个唤醒间隔最多提醒一次），`last_wake` 不动，
-屏幕恢复后 5 分钟内的那次检查就会补发：
+**每轮都是一个新开的进程，从不往已有终端里打字**（11-07 改版）。一轮 = 先关掉上一轮的终端（整个标签页），再
+`orca agent launch --agent <agent> --worktree path:<worktree> --surface terminal --prompt "<唤醒提示>"`；提示是：读
+`<状态目录>/BOOT.md` 并按步骤完成一轮。新句柄记进 `wake.json` 的 `round_terminal`、`round_launched_at`、`round_reason`、
+`round_attempt`。会话没有上一轮的对话记忆，只靠文件接上。
 
-- 终端停在子代理的对话框里：输入框上沿的横线里写着子代理的名字（`──── Daily literature scan 11-07 ─`），空输入框显示
-  `Message @<子代理>…`。这时打进去的字都给了子代理，负责人收不到（11-07 四次定时唤醒就这样丢了，9 个多小时没开新一轮；
-  输入框里已经有字时 `Message @` 提示没了，只剩带名字的横线，所以两样都认）。
-- 输入框里有没发出去的文字（人打了一半，或上次唤醒的回车被吞）：再发会和它粘成一条（11-07 出现过 `/clear /clear`）。
-  新会话的灰色提示 `Try "…"` 不算。
+为什么不再往终端里打字：11-07 负责人终端先是输入框残留 `/clear`，"等空闲"判它忙，跳过了 99 次；后来画面停在后台子代理的
+对话框里，四次唤醒（`/clear` 加提示）都打给了子代理，回执只有 `input_accepted`，主会话一轮没开，断了 9 个多小时。
+屏幕状态有太多种，靠打字唤醒总有漏的，所以改成每轮新开。
 
-唤醒发出后 15 分钟还没开始一轮（`cycle.json` 的 `started` 早于 `last_wake`），每次 5 分钟的检查都会看到，立刻发一次 QQ，
-带上屏幕上看到的原因；不再等到下一次该唤醒时（两小时后）才说。
-负责人终端不在了（关掉、断开、孤儿）就在 `worktree` 里用 `agent`（默认 claude）新开一个，把新句柄写回 config.json，并发 QQ 说明。
-终端里跑的不是配置的 agent 就拒绝唤醒。
+- **讨论终端**（config 的 `discussion_terminal`，旧名 `terminal` 也认）是人和负责人聊天用的，唤醒脚本对它只读不写：不发字、
+  不 `/clear`、不关。即使它被误记成了上一轮的终端，也不会被关。
+- **一次只跑一轮**：`cycle.json` 是 `running` 且开始不到 `stale_running_s`（默认 3 小时）就跳过；超过了就关掉那一轮的终端、
+  重开，发一次 QQ。刚开出、还没到 15 分钟、也还没开始的那一轮同样挡住新的一轮（`--force` 除外）。
+- **看门狗**（每 5 分钟一次的运行都查）：开出后 15 分钟 `cycle.json` 的 `started` 还早于开出时间，就关掉它、按同一原因重开一次，
+  这次不发 QQ；重开的那次 15 分钟后还没开始，发一次 QQ，附上它屏幕末尾 12 行看得出的原因（停在子代理对话框、输入框有字、
+  或最后几行原文），之后不再自动重开，等下一次定时或消息触发重新算。`WAKE_OFF` 期间看门狗也停，只盯手动 `--force` 开出的那一轮。
+- 新开失败（Orca 没回句柄）发 QQ，6 小时内不重复。
+- 日志每条写清原因、第几次、新句柄、launch 回执的 `outcome.kind`、是否关了上一轮的终端。
 
-一次唤醒 = 先发 `/clear`（新开的终端不发），再发一条提示：读 `<状态目录>/BOOT.md` 并按步骤完成一轮。
-会话没有上一轮的对话记忆，只靠文件接上。停掉而不卸载：`touch <状态目录>/WAKE_OFF`。
-日志 `<LEAD_ROOT>/log/wake.log`，唤醒状态 `<状态目录>/wake.json`（`last_wake`、`last_reason`、`busy_since`、`alerted_*`）。
+停掉而不卸载：`touch <状态目录>/WAKE_OFF`（`--force` 仍然开）。
+日志 `<LEAD_ROOT>/log/wake.log`，唤醒状态 `<状态目录>/wake.json`（`last_wake`、`last_reason`、`round_*`、`alerted_*`）。
 
 ## 每轮做什么
 
@@ -147,10 +149,10 @@ live.json、自己的台账和收件箱），**先做、后报**，把每一条�
 | 项目 | — | `LEAD_PROJECT`（或 `--project`） | `LEAD_ROOT` 下唯一一个带 config.json 的目录 |
 | 根目录 | — | `LEAD_ROOT` | `~/.lead` |
 | 状态目录 | — | `LEAD_HOME`（或 `--home`） | `<LEAD_ROOT>/<pid>` |
-| 负责人终端 | `terminal` | — | 空（lead_wake 会新开） |
-| 新开终端的工作区 | `worktree` | — | 空（不能新开） |
+| 讨论终端（唤醒脚本不碰） | `discussion_terminal`（旧名 `terminal`） | — | 空 |
+| 每轮新开会话的工作区 | `worktree` | — | 空（开不了） |
 | 新开用的 agent | `agent` | — | `claude` |
-| 唤醒间隔 | `interval_s` / `inbox_min_gap_s` / `stale_running_s` / `busy_alert_s` | — | 7200 / 600 / 10800 / 14400 |
+| 唤醒间隔 | `interval_s` / `inbox_min_gap_s` / `stale_running_s` | — | 7200 / 600 / 10800 |
 | 本地进度目录（档案） | `progress_home` | `LEAD_PROGRESS_HOME`，再 `PROGRESS_HOME` | `~/.progress` |
 | 看板主机 | `board_host` | `LEAD_BOARD_HOST` | 空 = 看板读本地 `progress_home` |
 | 看板主机上的进度目录 | `board_progress_home` | `LEAD_BOARD_PROGRESS_HOME` | `.progress`（相对远端家目录） |

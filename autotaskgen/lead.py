@@ -6,7 +6,7 @@ lead_wake.py, reads the framework's own numbers, acts first and reports after, a
 adjustment it makes, each with a checkable done_when and a recheck time.
 
 State directory (default <LEAD_ROOT>/<project>, LEAD_ROOT default ~/.lead; ideally a local git repo):
-  config.json   terminal handle, worktree, wake intervals, optional paths (see CONFIG_DEFAULTS)
+  config.json   worktree, discussion terminal, wake intervals, optional paths (see CONFIG_DEFAULTS)
   BOOT.md       the per-cycle procedure the session follows (template: templates/lead/BOOT.md)
   HANDOFF.md    rolling handoff, rewritten by the session at the end of every cycle
   ledger.jsonl  adjustments/questions the lead issued, each with done_when + check_at
@@ -41,21 +41,20 @@ STATUS_SCHEMA = "lead-status/v1"
 LEDGER_STATES = ("open", "done", "escalated", "obsolete")
 VERDICTS = ("done", "not_done", "obsolete", "cannot_tell")
 
-# config.json keys (all optional except terminal/worktree, which lead_wake needs) and their defaults.
+# config.json keys (all optional except worktree, which lead_wake needs) and their defaults.
 CONFIG_DEFAULTS = {
-    "terminal": "",               # Orca terminal handle of the lead session (lead_wake rewrites it after a relaunch)
+    "discussion_terminal": "",    # Orca terminal the owner talks to the lead in; lead_wake never writes to it
     "worktree": "",               # worktree path a fresh lead session is launched in
     "interval_s": 7200,           # timer wake
     "inbox_min_gap_s": 600,       # earliest wake after the previous one when an owner message is waiting
     "stale_running_s": 10800,     # a 'running' cycle older than this no longer blocks a wake
-    "busy_alert_s": 14400,        # QQ alert when the terminal has been busy this long
     "progress_home": "",          # local progress store (dossiers); default $PROGRESS_HOME or ~/.progress
     "board_host": "",             # ssh host that serves the board; "" = the board reads the local progress_home
     "board_progress_home": ".progress",  # progress store on board_host (relative = under the remote home)
     "hermes_bin": "",             # default $HERMES_BIN, else `hermes` on PATH, else ~/.local/bin/hermes
     "qq_conf": "",                # default <progress_home>/qq.json {"target","owner"}
     "orca_bin": "",               # default $ORCA_BIN, else `orca` on PATH
-    "agent": "claude",            # agent a fresh lead terminal is launched with
+    "agent": "claude",            # agent each lead round is launched with
     "lead_cmd": "lead",           # how the session calls this CLI (several projects: "lead --project <pid>")
     "wake_prompt": "",            # override the wake prompt; placeholders {reason} {project} {boot} {lead}
     "alert_prefix": "[负责人]",    # prefix of the QQ alerts lead_wake sends
@@ -623,7 +622,7 @@ def init(ctx, conf_updates=None, values=None, template=None, force=False, git=Tr
     """Create/extend the state dir. Existing config keys are kept unless given; BOOT.md is kept unless force."""
     os.makedirs(os.path.join(ctx.home, "reports"), exist_ok=True)
     on_disk = load_json(ctx.config_path, {}) or {}
-    for k in ("terminal", "worktree", "interval_s", "inbox_min_gap_s", "stale_running_s", "busy_alert_s"):
+    for k in ("discussion_terminal", "worktree", "interval_s", "inbox_min_gap_s", "stale_running_s"):
         on_disk.setdefault(k, CONFIG_DEFAULTS[k])
     on_disk.update({k: v for k, v in (conf_updates or {}).items() if v not in (None, "")})
     save_json(ctx.config_path, on_disk)
@@ -643,7 +642,7 @@ def init(ctx, conf_updates=None, values=None, template=None, force=False, git=Tr
 
 
 def cmd_init(ctx, a):
-    upd = {"terminal": a.terminal, "worktree": a.worktree, "board_host": a.board_host}
+    upd = {"discussion_terminal": a.terminal, "worktree": a.worktree, "board_host": a.board_host}
     vals = {}
     for kv in a.set or []:
         k, _, v = kv.partition("=")
@@ -704,7 +703,7 @@ def build_parser():
     c.add_argument("--report", default="")
     c.set_defaults(fn=cmd_cycle)
     it = sub.add_parser("init")
-    it.add_argument("--terminal", default="", help="Orca handle of the lead session (lead_wake launches one if empty)")
+    it.add_argument("--terminal", default="", help="Orca handle of the terminal the owner talks to the lead in (lead_wake never writes to it)")
     it.add_argument("--worktree", default="", help="worktree a fresh lead session is launched in")
     it.add_argument("--board-host", dest="board_host", default="", help="ssh host of the board (empty = local)")
     it.add_argument("--set", nargs="*", help="BOOT.md placeholder values, name=value")
