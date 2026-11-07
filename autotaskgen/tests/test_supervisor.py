@@ -341,6 +341,18 @@ class MapSections(unittest.TestCase):
         evs[-1] = dict(evs[-1], blocker="dep", summary="等人类给真实端点")    # a real human ask is still inferred
         self.assertIn("推断：等人", "\n".join(sup.blocker_table(*self.fold(evs), NOW)))
 
+    def test_wait_on_another_line_after_the_approval_arrived_is_not_human(self):
+        for summary in ("仅等EVB经核二B13a固定版本/端点/公开合同；正式9bc授权已到，无固定额度条件",
+                        "唯一外部等待B13a固定版本/实际端点/公开接口，EVB经核二交；人类9bc已到，无需预算"):
+            evs = self.evs + [{"kind": "node_block", "line": "Q", "node": "w", "blocker": "dep", "at": at(300),
+                               "actor": {"role": "router", "handle": R}, "summary": summary}]
+            txt = "\n".join(sup.blocker_table(*self.fold(evs), NOW))
+            self.assertNotIn("推断：等人", txt, summary)
+            self.assertNotIn("可能标错", txt, summary)
+            self.assertNotIn("等预算/调用额度裁定", txt, summary)          # the budget part already arrived
+        evs[-1] = dict(evs[-1], summary="授权已到；仍等人类给真实端点")       # the live clause still names the human
+        self.assertIn("推断：等人", "\n".join(sup.blocker_table(*self.fold(evs), NOW)))
+
     def test_blocker_human_not_mislabeled(self):
         evs = self.evs + [{"kind": "node_block", "line": "Q", "node": "w", "blocker": "human", "at": at(300),
                            "actor": {"role": "router", "handle": R}, "summary": "等授权"}]

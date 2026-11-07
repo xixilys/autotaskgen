@@ -52,7 +52,10 @@ HUMAN_RE = re.compile(r"人类|授权|端点|首回复|材料|endpoint|批准", 
 LATER_RE = re.compile(r"(之后|以后|交付后|完成后|固定后|通过后|后续|后再|再转\s*human|再请求|才需要|才转|才请求)")
 # a dep-labelled wait whose text also names a human step is a wait on both, not a mislabel (11-07: FE waited on the
 # B13a handoff and on the human budget approval; terra flagged it mislabeled for being dep, then for being counted human)
-DEP_RE = re.compile(r"交付|交接|未收|未交|待交|待[^；;，,。\s]{1,12}?交|到件|产物|产出|依赖")
+DEP_RE = re.compile(r"交付|交接|未收|未交|待交|待[^；;，,。\s]{1,12}?交|到件|产物|产出|依赖|固定版本|等(?:待)?[A-Z]{2,}")
+# a clause saying the human part already arrived is not a wait on the human (11-07: FE "仅等EVB经核二B13a固定版本/
+# 端点/公开合同；正式9bc授权已到" was inferred as waiting on the human after the approval had landed)
+ARRIVED_RE = re.compile(r"已到|已批|已收到|已获|已给|已落实|已核|无需|不需|不限|不锁|无[^；;，,。]{0,4}(?:额度|预算|上限)")
 # a non-human block whose human-sounding words are about budget or call quota waits on a ruling, not on the human
 # (11-07: FE "撤回虚假L46批准，授权未到；B13a端点/固定版本亦待EVB经核二交，保留no-auto零调用" was counted as 17 h
 # waiting on the human and flagged mislabeled; terra asked that a budget wait no longer count as waiting on the human)
@@ -279,10 +282,11 @@ def _wait_info(n: Dict[str, Any], now: _dt.datetime) -> Dict[str, Any]:
     # keyword inference only overrides an explicit non-human blocker when the text does not put the human step later
     # (11-06: FE "按516b先等B8…B8交付后核心二请求人类调用授权再转human" with blocker=dep was reported as waiting on the
     # human and "mislabeled", which made the board and a QQ reminder ask the user for something not yet due)
-    hit = bool(HUMAN_RE.search(txt)) and not (n.get("blocker") and LATER_RE.search(last_txt or txt))
+    live_txt = "；".join(c for c in re.split(r"[；;。，,]", txt) if not ARRIVED_RE.search(c))
+    hit = bool(HUMAN_RE.search(live_txt)) and not (n.get("blocker") and LATER_RE.search(last_txt or txt))
     both = hit and n.get("blocker") == "dep" and bool(DEP_RE.search(txt))
-    own = [c for c in re.split(r"[；;。，,]", txt) if not DEP_RE.search(c)]
-    budget = bool(BUDGET_RE.search(txt)) and (hit or n.get("blocker") == "human") and \
+    own = [c for c in re.split(r"[；;。，,]", live_txt) if not DEP_RE.search(c)]
+    budget = bool(BUDGET_RE.search(live_txt)) and (hit or n.get("blocker") == "human") and \
         not any(HUMAN_ONLY_RE.search(c) for c in own)
     human = n.get("blocker") == "human" or (hit and not both and not budget)
     mislabeled = human and n.get("status") == "blocked" and n.get("blocker") not in ("human", None)
