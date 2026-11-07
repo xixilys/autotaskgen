@@ -52,7 +52,13 @@ HUMAN_RE = re.compile(r"人类|授权|端点|首回复|材料|endpoint|批准", 
 LATER_RE = re.compile(r"(之后|以后|交付后|完成后|固定后|通过后|后续|后再|再转\s*human|再请求|才需要|才转|才请求)")
 # a dep-labelled wait whose text also names a human step is a wait on both, not a mislabel (11-07: FE waited on the
 # B13a handoff and on the human budget approval; terra flagged it mislabeled for being dep, then for being counted human)
-DEP_RE = re.compile(r"交付|交接|未收|未交|待交|到件|产物|产出|依赖")
+DEP_RE = re.compile(r"交付|交接|未收|未交|待交|待[^；;，,。\s]{1,12}?交|到件|产物|产出|依赖")
+# a non-human block whose human-sounding words are about budget or call quota waits on a ruling, not on the human
+# (11-07: FE "撤回虚假L46批准，授权未到；B13a端点/固定版本亦待EVB经核二交，保留no-auto零调用" was counted as 17 h
+# waiting on the human and flagged mislabeled; terra asked that a budget wait no longer count as waiting on the human)
+BUDGET_RE = re.compile(r"预算|额度|算力|配额|调用|token|机器", re.I)
+# ...unless a clause outside the dependency wait names something only a person can give (a real endpoint, materials)
+HUMAN_ONLY_RE = re.compile(r"端点|首回复|材料|endpoint|目标|完成标准|留出集|对外|发布|账号|权限", re.I)
 TIER3_RE = re.compile(r"目标|预算|对外|留出集|只有人|授权|端点|人类|完成标准|发布")
 ACTIVE = ("running", "ready", "blocked")
 CHECK_MIN, CHECK_MAX, CHECK_DEFAULT = 30, 360, 60
@@ -275,7 +281,10 @@ def _wait_info(n: Dict[str, Any], now: _dt.datetime) -> Dict[str, Any]:
     # human and "mislabeled", which made the board and a QQ reminder ask the user for something not yet due)
     hit = bool(HUMAN_RE.search(txt)) and not (n.get("blocker") and LATER_RE.search(last_txt or txt))
     both = hit and n.get("blocker") == "dep" and bool(DEP_RE.search(txt))
-    human = n.get("blocker") == "human" or (hit and not both)
+    own = [c for c in re.split(r"[；;。，,]", txt) if not DEP_RE.search(c)]
+    budget = bool(BUDGET_RE.search(txt)) and (hit or n.get("blocker") == "human") and \
+        not any(HUMAN_ONLY_RE.search(c) for c in own)
+    human = n.get("blocker") == "human" or (hit and not both and not budget)
     mislabeled = human and n.get("status") == "blocked" and n.get("blocker") not in ("human", None)
     failed = False
     last_ad = max([i for i, h in enumerate(hist) if h.get("kind") == "auto_dispatch"] or [-1])
@@ -283,7 +292,8 @@ def _wait_info(n: Dict[str, Any], now: _dt.datetime) -> Dict[str, Any]:
         after = hist[last_ad + 1:]
         failed = any(h.get("kind") == "node_block" and (n.get("blocker") == "env" or "代派失败" in str(h.get("summary")))
                      for h in after) or any("代派失败" in str(h.get("summary") or "") for h in after)
-    return {"since": since, "hours": _hrs(now, since), "human": human, "both": both, "mislabeled": mislabeled,
+    return {"since": since, "hours": _hrs(now, since), "human": human, "both": both, "budget": budget,
+            "mislabeled": mislabeled,
             "dispatch_failed": failed}
 
 
@@ -309,6 +319,10 @@ def blocker_table(project: Dict[str, Any], state: Dict[str, Any], now: _dt.datet
                 flags.append("推断：等人（命中\"人类/授权/端点\"）" if n.get("blocker") != "human" else "等人（blocker=human）")
             if w["both"]:
                 flags.append("并存：等依赖，文中也提到人类/授权（按 dep 计，不算标错，不计入等人时长；是否真要人给由你核实）")
+            if w["budget"]:
+                flags.append("文中是预算/调用额度：标 human 时谁来批由你按规则核实" if n.get("blocker") == "human" else
+                             "等预算/调用额度裁定（按 blocker=%s 计，不计入等人时长，不算标错；不据此自动开跑真实调用）"
+                             % (n.get("blocker") or "-"))
             if w["mislabeled"]:
                 flags.append("⚠ blocker 可能标错")
             if w["dispatch_failed"]:

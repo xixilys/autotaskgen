@@ -322,6 +322,25 @@ class MapSections(unittest.TestCase):
         rows, flagged = sup.hard_metrics(proj, st, evs, {"metrics": {}}, NOW)
         self.assertNotIn("Q:等人", flagged)
 
+    def test_budget_wait_is_not_counted_as_waiting_on_the_human(self):
+        evs = self.evs + [{"kind": "node_block", "line": "Q", "node": "w", "blocker": "dep", "at": at(300),
+                           "actor": {"role": "router", "handle": R},
+                           "summary": "撤回虚假批准，授权未到；B13a端点/固定版本亦待EVB经核二交，保留no-auto零调用"}]
+        proj, st = self.fold(evs)
+        txt = "\n".join(sup.blocker_table(proj, st, NOW))
+        self.assertIn("并存：等依赖", txt)                     # "亦待EVB经核二交" is a handoff wait
+        self.assertIn("等预算/调用额度裁定（按 blocker=dep 计", txt)
+        self.assertNotIn("推断：等人", txt)
+        self.assertNotIn("可能标错", txt)
+        rows, flagged = sup.hard_metrics(proj, st, evs, {"metrics": {}}, NOW)
+        self.assertNotIn("Q:等人", flagged)
+        evs[-1] = dict(evs[-1], blocker="design", summary="等核心一批准追加调用预算")
+        txt = "\n".join(sup.blocker_table(*self.fold(evs), NOW))
+        self.assertIn("等预算/调用额度裁定（按 blocker=design 计", txt)
+        self.assertNotIn("可能标错", txt)
+        evs[-1] = dict(evs[-1], blocker="dep", summary="等人类给真实端点")    # a real human ask is still inferred
+        self.assertIn("推断：等人", "\n".join(sup.blocker_table(*self.fold(evs), NOW)))
+
     def test_blocker_human_not_mislabeled(self):
         evs = self.evs + [{"kind": "node_block", "line": "Q", "node": "w", "blocker": "human", "at": at(300),
                            "actor": {"role": "router", "handle": R}, "summary": "等授权"}]
