@@ -289,6 +289,28 @@ class AlertBuilding(CloseBase):
                                             "等待人类带回真实评估器首回复、明确端点和实际调用授权；三项齐备后才启动"))
         self.assertFalse(patrol.lift_matches(ask, "构建前唯一SConscript差异为shared已去旧FabricSliceDevice注册，等确认保留"))
 
+    def test_human_ask_dropped_when_a_coordinator_names_it_settled(self):
+        import patrol
+        fu = {"id": "fu_d3", "line": "FE", "to": "human", "check_at": at(-60), "human": True, "tries": 1,
+              "text": "请决定并提供 F5 的真实评估器调用预算授权", "sent_at": "2026-11-07T01:19:31Z",
+              "history": [{"at": "2026-11-07T04:32:12Z", "what": "not_done"}]}
+        coord = {"role": "coordinator", "handle": "c1"}
+        done = {"kind": "project_update", "at": "2026-11-07T08:03:23Z", "actor": coord,
+                "summary": "跟进fu_d3已落实：L46人类批准按需，F5只等B13a"}
+        self.assertTrue(patrol.fu_settled([done], fu))
+        self.assertFalse(patrol.fu_settled([dict(done, summary="跟进fu_d3未落实，仍等授权")], fu))
+        self.assertFalse(patrol.fu_settled([dict(done, actor={"role": "worker"})], fu))
+        self.assertFalse(patrol.fu_settled([dict(done, at="2026-11-07T04:00:00Z")], fu))      # before terra's recheck
+        self.assertFalse(patrol.fu_settled([dict(done, summary="L46已批，按需")], fu))         # no id: terra decides
+        later = dict(fu, history=fu["history"] + [{"at": "2026-11-07T10:32:00Z", "what": "not_done"}])
+        self.assertFalse(patrol.fu_settled([done], later))                                   # terra re-arms it
+        cache = snap.load_task_cache()
+        cache["supervisor:t"] = {"followups": {"fu_d3": fu}}
+        snap.save_task_cache(cache)
+        now = core.parse_iso("2026-11-07T09:37:00Z")
+        self.assertEqual(patrol.followup_alerts({"id": "t"}, now, [done]), {})
+        self.assertIn("fu:fu_d3", patrol.followup_alerts({"id": "t"}, now, []))
+
     def test_dry_run_sends_nothing(self):
         self.put_live(live(minutes_ago=50, workers=[]))
         fr = FakeRunner()

@@ -871,6 +871,34 @@ def human_wait_lifted(events: List[Dict[str, Any]], line: str, since: Optional[s
     return lifted and not any(human.values())
 
 
+FU_SETTLED_RE = re.compile(r"已落实|已完成|已解决|已到|已批|已收到|已关闭|作废|不再需要|done|obsolete", re.I)
+FU_NOT_RE = re.compile(r"未落实|没落实|未完成|未解决|未到|未批|not[ _]done", re.I)
+
+
+def fu_settled(events: List[Dict[str, Any]], fu: Dict[str, Any]) -> bool:
+    """True when a coordinator or router event names this follow-up by id and says it is settled, after the ask was
+    sent and after terra's latest recheck (a later not_done from terra re-arms the reminder).
+    11-07: core1 wrote "跟进fu_d3cf83f1已落实：L46人类批准按需…" at 08:03, but terra's recheck was 10:32, so the
+    09:37 QQ reminder would have asked the user to approve a budget already approved. The FE block was never
+    blocker=human, so human_wait_lifted could not see it."""
+    fid = str(fu.get("id") or "")
+    if not fid:
+        return False
+    since = max([str(fu.get("sent_at") or fu.get("created_at") or "")] +
+                [str(h.get("at") or "") for h in fu.get("history") or [] if isinstance(h, dict) and h.get("at")])
+    for e in events:
+        if (e.get("actor") or {}).get("role") not in ("coordinator", "router") or str(e.get("at") or "") < since:
+            continue
+        s = str(e.get("summary") or "")
+        i = s.find(fid)
+        if i < 0:
+            continue
+        near = s[i + len(fid):i + len(fid) + 24]
+        if FU_SETTLED_RE.search(near) and not FU_NOT_RE.search(near):
+            return True
+    return False
+
+
 def followup_alerts(project: Dict[str, Any], now: _dt.datetime,
                     events: Optional[List[Dict[str, Any]]] = None) -> Dict[str, str]:
     """Supervisor follow-ups nobody automated: addressed to the human, or to tooling with no handler configured,
@@ -894,6 +922,8 @@ def followup_alerts(project: Dict[str, Any], now: _dt.datetime,
             continue
         if e.get("to") == "human" and events and e.get("line") and \
                 human_wait_lifted(events, e["line"], e.get("sent_at") or e.get("created_at"), e.get("text")):
+            continue
+        if events and fu_settled(events, e):
             continue
         out["fu:%s" % e["id"]] = _short("%s 线：%s" % (e.get("line") or "?", e.get("text") or ""), 300)
     return out
