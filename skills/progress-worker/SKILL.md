@@ -19,6 +19,8 @@ progress heartbeat --line <线> --node <节点> --summary "开始做什么"
 ```
 progress block --line <线> --node <节点> --blocker dep|design|env|resource|human|other --summary "卡在哪"
 ```
+收到继续的指示（GO、裁定、依赖到了）接着干时，**先发一条 `progress heartbeat`** 再干：节点才会从"卡住"回到"在跑"，不然看板和巡检一直把你算成卡住（11-07 EVB 分阶段等 GO 的节点干了三段，看板一直显示卡住）。分阶段等 GO 的，每进一个阶段都发一条。
+
 blocker 含义：`dep` 依赖没好；`design` 设计/规格有问题要人定；`env` 环境、权限、工具坏了；`resource` 机器/配额不够；`human` 只有人能给的东西（授权、端点、材料、目标决定），等人的一律用它，不要标成 dep；`other` 其它。
 
 ## 交付：先写 deliver，再发 worker_done（顺序不能反）
