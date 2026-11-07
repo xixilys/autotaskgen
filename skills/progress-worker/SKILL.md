@@ -32,6 +32,7 @@ progress deliver --line <线> --node <节点> --outcome PASS|PARTIAL|FAIL|UNKNOW
 ```
 - `PASS` 全部达标；`PARTIAL` 部分完成，说明缺什么；`FAIL` 没做成；`UNKNOWN` 无法判断。
 - 不提前收工：预算没用完、剩下的验收条目也不靠别人的活、待定裁决或环境时，接着做完再交。只有剩下每一条都被外部挡住才交 `PARTIAL`，报告里逐条写挡在哪；能自己做的缺口不算挡住。`deliver` 会拒绝预算用不到三分之一就交的 PARTIAL/FAIL，除非加 `--blocked-by "挡在哪"` 写明外部挡住的是什么。
+- 要以"等裁定"为由交 `PARTIAL` 或写 block 之前，先重跑一次 `progress-inspect resume --line <线> --node <节点>`，看协调人和 router 在你开工后有没有已经裁了：已裁的按裁定接着做完，不算外部挡住（11-07 SR 两个 worker 09:17 开工，核心二 09:25 已裁类型，它们仍以"等裁定"提前交 PARTIAL，被打回重派）。
 - `--report` 写报告文件路径，`--head` 写交付时的 `git rev-parse HEAD`。
 - 返回 `"ok": true` 之后，才给 router 发 worker_done。
 - 推送：`deliver` 写记录前会把你当前分支（给了 `--head` 时是该提交所在 worktree 的分支）推到 GitHub origin，只推已提交的内容，所以交付前先 `git commit`；main/master 永远不推，也不要自己推。输出里的 `push` 是推送结果：`"status": "pushed"` 表示已推上（记录里带推上的 sha）；出现 `push_failed` 就看原因（被排除规则拦下、rebase 冲突、网络等），修好后重跑同一条 deliver，修不了就在交付消息里写明，不要原样反复重试。
