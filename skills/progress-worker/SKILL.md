@@ -21,7 +21,7 @@ progress block --line <线> --node <节点> --blocker dep|design|env|resource|hu
 ```
 收到继续的指示（GO、裁定、依赖到了）接着干时，**先发一条 `progress heartbeat`** 再干：节点才会从"卡住"回到"在跑"，不然看板和巡检一直把你算成卡住（11-07 EVB 分阶段等 GO 的节点干了三段，看板一直显示卡住）。分阶段等 GO 的，每进一个阶段都发一条。
 
-blocker 含义：`dep` 依赖没好；`design` 设计/规格有问题要人定；`env` 环境、权限、工具坏了；`resource` 机器/配额不够；`human` 只有人能给的东西（授权、端点、材料、目标决定），等人的一律用它，不要标成 dep；`other` 其它。
+blocker 含义：`dep` 等别的节点或别的线交东西（产物、清单、run_id、版本）；`design` 设计/规格要定，或等协调人、router 裁定、批准、GO、预算；`env` 环境、权限、工具坏了；`resource` 机器/配额不够；`human` 只有人本人能给的东西（真实端点、材料、目标或完成标准的决定），不要把"等核心一裁定""缺另一条线的清单"标成 human——human 会发到人的 QQ 上（11-07 EVB、NEWP 各有一次这样标错）；`other` 其它。
 
 ## 交付：先写 deliver，再发 worker_done（顺序不能反）
 
