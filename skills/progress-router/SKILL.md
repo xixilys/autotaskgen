@@ -29,7 +29,7 @@ progress plan --line <线> --node <节点> --title "标题" --deps a,b \
 
 ## 1.5 拆子图（propose）：一次排一组节点，标明串行/并行
 
-要一次拆出多个节点（或开子 router）时，写一个 JSON 文件，用 `progress propose <文件>` 提交（先加 `--check` 只校验不写）。脚本闸门校验通过才写入；不通过会返回中文问题清单，按清单改完再交。
+要一次拆出多个节点（或开子 router）时，写一个 JSON 文件，用 `progress propose <文件>` 提交（先加 `--check` 只校验不写）。脚本闸门校验通过才写入；不通过会返回中文问题清单，按清单改完再交。通过了也要看 `warnings`：出现"已按 serial 处理"或"可以标 parallel"，说明写出来的和你想要的不一致，先改 JSON 再提交，不要提交后再 cancel 重提（11-06、11-07 共三次这样白建四个节点又全部取消）。
 ```json
 {"line": "<线>", "parent": null, "summary": "怎么拆、为什么",
  "evidence": ["<报告路径 / 失败记录 / 提交号>"],

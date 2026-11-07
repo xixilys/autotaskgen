@@ -396,6 +396,16 @@ def gate(proposal: Any, project: Dict[str, Any], state: Dict[str, Any]) -> Dict[
                 seg["downgraded_from"] = "parallel"
                 seg["downgrade_reasons"] = reasons
                 warns.append("段 %s 标为 parallel，但%s；已按 serial 处理（一次只跑一个）" % (seg["id"], "；".join(reasons)))
+        if seg["mode"] == "serial" and len(ids) >= 2 and not seg.get("downgraded_from"):
+            # 11-07: SR proposed four workloads "按互斥写域并行" under mode=serial, then cancelled all four and
+            # re-proposed them as parallel; say so at --check time instead
+            kids = seg["nodes"]
+            if not any(d in ids for c in kids for d in c["deps"]) and all(c["write_scope"] for c in kids) and \
+                    not any(scope_overlaps(a["write_scope"], b["write_scope"]) or
+                            (a["acceptance"] and a["acceptance"] == b["acceptance"])
+                            for i, a in enumerate(kids) for b in kids[i + 1:]):
+                warns.append("段 %s 标为 serial，但 %d 个节点互不依赖、写域不重叠、验收各自独立，可以标 parallel；"
+                             "确实要一次只跑一个（例如抢同一台机器的测量窗口），就在 deps 里写明先后" % (seg["id"], len(ids)))
         if seg["mode"] == "serial" and len(ids) >= 2:
             inner = {c["id"]: [d for d in c["deps"] if d in ids] for c in seg["nodes"]}
             order = _topo(ids, inner)

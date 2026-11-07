@@ -162,6 +162,16 @@ class Gate(GBase):
         r = self.gate(proposal(("a", "parallel", [child("x", acc=["全部测试通过"]), child("y", acc=["全部测试通过"])])))
         self.assertEqual(r["normalized"]["segments"][0]["mode"], "serial")
 
+    def test_serial_segment_of_independent_nodes_warns_it_could_be_parallel(self):
+        r = self.gate(proposal(("a", "serial", [child("x"), child("y"), child("z")])))
+        self.assertTrue(r["ok"], r["errors"])
+        self.assertTrue(any("段 a 标为 serial" in w and "可以标 parallel" in w for w in r["warnings"]), r["warnings"])
+        for seg in (("a", "serial", [child("x"), child("y", deps=["x"])]),                  # ordered on purpose
+                    ("a", "serial", [child("x", scope=["src/m"]), child("y", scope=["src/m/f.py"])]),
+                    ("a", "parallel", [child("x", acc=["同一验收"]), child("y", acc=["同一验收"])])):
+            r = self.gate(proposal(seg))
+            self.assertFalse(any("可以标 parallel" in w for w in r["warnings"]), (seg[0], r["warnings"]))
+
     def test_serial_order_respects_inner_deps(self):
         r = self.gate(proposal(("a", "serial", [child("x", deps=["y"]), child("y")])))
         nodes = r["normalized"]["segments"][0]["nodes"]
