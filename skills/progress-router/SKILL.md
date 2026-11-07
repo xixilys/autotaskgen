@@ -71,6 +71,12 @@ progress dispatch --line <线> --node <节点> --task <task_…> --dispatch <ctx
 
 ## 3. 审查（review）：收到交付后
 
+**11-07 起，run/check 节点交 PASS 后不再由你审（router 规则第 3 条）。** 巡检先做机械核对：报告在交付的提交里；报告写了测过的版本 `head=<sha>`，且之后只改了报告目录；说明头里每个验收项都有结果和命令输出尾部；「前置条件」每项都有结论。没过，巡检告诉你缺什么，你让 worker 补齐重交或排返工。过了，巡检自动排 1–3 个 Terra max 独立审查节点（`<节点>-review<轮次>-<序号>`，新会话、不是作者、只读说明报告和改动），几个结论取最严的，齐了巡检转告你。你只读结论定下一步：PASS 往下走，PARTIAL/FAIL 排返工。
+- 不要自己写 `progress review` 审这些交付，那会盖掉独立审查的结论。
+- 觉得要加审：`progress plan --line <线> --node <节点>-review-extra --kind review --review-of <节点> --summary "加审：理由"`，巡检写审查说明并派出，结论一起取最严。
+- 要把通过的工作合进你的分支，合完自己 `git push` 这个分支（不推 main）。
+- 下面的 `progress review` 只用于这条规则之前的交付，以及巡检说机械核对查不了的情况。
+
 ```
 progress review --line <线> --node <节点> --outcome PASS|PARTIAL|FAIL|UNKNOWN --summary "审查结论"
 ```

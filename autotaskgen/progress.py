@@ -135,8 +135,8 @@ def submit(pid, event, extra=None):
 def push_step(cmd, a, pid, ev):
     """deliver: push the worker's branch (cwd, or the worktree holding --head); review: the router's branch (cwd).
     Runs before the event is written; the result goes into the event and the CLI output. Never blocks the event."""
-    if cmd not in ("deliver", "review"):
-        return None
+    if cmd not in ("deliver", "review") or getattr(a, "review_node", None):
+        return None     # an automatic reviewer (R3) changes nothing, so it has no branch to push
     guard_host = None if local_store(pid) else os.environ.get(
         "PROGRESS_PUSH_GUARD_HOST", os.environ.get("PROGRESS_REMOTE", "wsl"))
     res = workpush.push_work_branch(os.getcwd(), head=a.head if cmd == "deliver" else None,
@@ -152,7 +152,7 @@ def push_step(cmd, a, pid, ev):
 
 
 def build_event(cmd, a):
-    actor = {"role": a.role or DEFAULT_ROLE[cmd],
+    actor = {"role": a.role or ("worker" if getattr(a, "review_node", None) else DEFAULT_ROLE[cmd]),
              "handle": a.as_handle or os.environ.get("ORCA_TERMINAL_HANDLE"),
              "workspace": os.environ.get("ORCA_WORKSPACE_ID")}
     if a.model:
@@ -162,7 +162,7 @@ def build_event(cmd, a):
     ev = {"kind": KIND[cmd], "actor": {k: v for k, v in actor.items() if v},
           "summary": a.summary}
     for key in ("line", "node", "milestone", "outcome", "blocker", "by", "title", "spec",
-                "source", "result"):
+                "source", "result", "review_node", "review_of"):
         v = getattr(a, key, None)
         if v:
             ev[key] = v
@@ -183,6 +183,8 @@ def build_event(cmd, a):
                                               ("effort", a.effort), ("on", a.on)) if v}
         if a.no_auto:
             ev["auto_dispatch"] = False
+        elif getattr(a, "review_of", None):
+            ev["auto_dispatch"] = True    # R3: patrol writes the review spec itself
         if a.milestones:
             ev["milestones"] = [m for m in a.milestones.split(",") if m]
             ev.pop("milestone", None)
@@ -358,7 +360,10 @@ def parser():
             s.add_argument("--blocker", choices=sorted(core.DELIVER_BLOCKERS), help="with --outcome BLOCKED")
             s.add_argument("--result", choices=sorted(core.RESULTS),
                            help="with PASS: the experiment ran but the research result missed the bar")
-        if cmd in ("deliver", "block", "heartbeat"):
+        if cmd == "review":
+            s.add_argument("--review-node", dest="review_node",
+                           help="R3: you are the worker of this automatic review node; writes your verdict on --node")
+        if cmd in ("deliver", "block", "heartbeat", "review"):
             s.add_argument("--failure", dest="failures", action="append",
                            help="one distinct failure still unresolved at delivery (test name / error class); repeat for each; omit fixed ones")
             s.add_argument("--candidate", dest="candidates", action="append",
@@ -384,6 +389,9 @@ def parser():
                                 "default: review if the node id contains review/recheck/audit, else run")
             s.add_argument("--milestones", help="comma list of milestone ids this node serves")
             s.add_argument("--no-auto", action="store_true", help="patrol must not dispatch it")
+            s.add_argument("--review-of", dest="review_of",
+                           help="R3: an extra review of this delivered node; patrol writes its spec and dispatches it "
+                                "on Terra max (use with --kind review)")
     s = sub.add_parser("precheck", help="R1: check a node spec's 前置条件; missing inputs -> node_block blocker=dep")
     s.add_argument("--line", required=True)
     s.add_argument("--node", required=True)

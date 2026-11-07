@@ -126,6 +126,7 @@ sys.path.insert(0, str(HERE))
 import decide  # noqa: E402
 import graph  # noqa: E402
 import prereq  # noqa: E402
+import review_gate  # noqa: E402
 import progress_core as core  # noqa: E402
 import snapshot as snap  # noqa: E402
 import alerts as qq_alerts  # noqa: E402
@@ -199,6 +200,7 @@ SPEC_SNIPPET = """<!-- progress-worker -->
 本节点：主线 `{line}`，节点 `{node}`。命令 `progress`（没有就用 `~/.progress/bin/progress`）。
 - 开工前（以及中断、换终端、上下文压缩后）先运行 `progress-inspect resume --line {line} --node {node}` 读节点历史和本线经验；经验里写了的规则照做。
 - 交付：**先**写 `progress deliver --line {line} --node {node} --outcome PASS|BLOCKED --report <REPORT 路径> --head <git sha> --summary "一句白话"`，**再**给 router 发 worker_done；顺序不能反。只有两种结果：做完是 PASS（实验做完但研究结果不达标也是 PASS，加 `--result negative`）；被挡住是 BLOCKED，加 `--blocker dep|env|human|budget|design --blocked-by "还差什么"`。PARTIAL、FAIL 会被拒收。
+- 报告必须写明三样，交付后巡检先机械核对，过了才派独立审查（不是作者的新会话，只读说明、报告和改动），没过会退回让你补：测试时的版本写一行 `head=<sha>`（之后只许再改报告所在目录的文件）；说明里每个验收项（按 id）的结果，并用代码块贴命令输出的尾部；「前置条件」里每一项的结论（写出它的节点名、sha 或路径）。
 - `progress deliver` 会自动把本分支推到 GitHub origin（不推 main）：交付前先 `git commit`；输出里出现 `push_failed` 就按原因修好（或在交付消息里写明），不要原样反复重试。
 - 交付时报并行信号（巡检据此叫 router 拆分或判定撞车）：`--failure "<错误类别或测试名>"`，写类别不写描述（如 `CG16_BINDING_MISSING`、`test_jacobi_single`，40 字以内），同一种失败在不同节点用同一个词，巡检才能归并；只写交付时仍没解决、还要有人动手的失败，每个不同的一条，已修好的不写；`--candidate "<候选>"`，只写还没做、彼此独立、能分给别人并行做的方向，每个一条，已经跑过的不写；`--touched <路径1,路径2>`，写实际改了的文件。没有就省略该项，`--touched` 只要改了文件就必须写。
 - 做不完就接着做，不先交一部分：预算没用完、剩下的验收条目不靠别人的活，就做完再交。预算用完报 `BLOCKED --blocker budget`，`--blocked-by` 写剩下的工作量；缺别的节点或文件的产物报 dep，等裁决报 design，环境坏了报 env，只有人本人能给的报 human。以"等裁定"为由报 BLOCKED 之前，先重跑一次 `progress-inspect resume --line {line} --node {node}`，看协调人和 router 在你开工后有没有已经裁了（project_update）；已裁的按裁定接着做完。
@@ -365,6 +367,44 @@ def with_snippet(spec_text: str, lid: str, nid: str) -> str:
         return spec_text
     snippet = SPEC_SNIPPET.replace("{line}", lid).replace("{node}", nid)
     return spec_text.rstrip("\n") + "\n\n" + snippet
+
+
+def review_nodes_for(nodes: Dict[str, Any], nid: str) -> List[str]:
+    """R3: review nodes planned for this node's current delivery (not superseded/cancelled)."""
+    since = (nodes.get(nid) or {}).get("delivered_at") or ""
+    return sorted(rid for rid, r in nodes.items() if r.get("review_of") == nid and (r.get("planned_at") or "") >= since
+                  and r.get("status") not in ("superseded", "cancelled"))
+
+
+def gate_due(nodes: Dict[str, Any], nid: str) -> bool:
+    """R3: a PASS delivery of a run/check node after review_gate.SINCE, not reviewed since, no reviewers yet."""
+    n = nodes[nid]
+    if n.get("status") != "delivered" or n.get("outcome") != "PASS" or n.get("imported"):
+        return False
+    if (n.get("kind") or core.infer_node_kind(nid)) not in review_gate.GATE_KINDS:
+        return False
+    at = n.get("delivered_at") or ""
+    if at < review_gate.SINCE or (n.get("reviewed_at") or "") >= at:
+        return False
+    last = next((h for h in reversed(n.get("history") or []) if h.get("kind") == "node_deliver"), {})
+    return last.get("actor") in ("worker", "router") and not review_nodes_for(nodes, nid)
+
+
+def auto_review_spec(lid: str, nid: str, n: Dict[str, Any], nodes: Dict[str, Any]) -> Dict[str, Any]:
+    """R3: the generated spec of an automatic review node (it has no frozen spec file)."""
+    xid = n["review_of"]
+    x = nodes.get(xid) or {}
+    head = n.get("review_head") or (x.get("refs") or {}).get("head")
+    report = n.get("review_report") or (x.get("refs") or {}).get("report")
+    if not head or not report:
+        return {"error": "被审节点 %s 的交付没带 head/report" % xid}
+    sib = review_nodes_for(nodes, xid)
+    idx = sib.index(nid) + 1 if nid in sib else 1
+    text = review_gate.review_spec(lid, xid, nid, idx, max(len(sib), idx), head, report, n.get("review_base"),
+                                   x.get("spec"), SNIPPET_MARKER)
+    on = (x.get("route") or {}).get("on") or snap.remote_host()
+    return {"text": text, "header": {"route": dict(review_gate.REVIEW_ROUTE, on=on)}, "branch": head,
+            "source": "auto_review"}
 
 
 def worktree_name(lid: str, nid: str, now: _dt.datetime) -> str:
@@ -1751,7 +1791,7 @@ def plan(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[D
                 else:
                     findings.append({"line": lid, "node": nid, "code": "decide_queued"})
                 continue
-            if not n.get("auto_dispatch") or not n.get("spec") or not _is_worker_kind(n):
+            if not n.get("auto_dispatch") or not (n.get("spec") or n.get("review_of")) or not _is_worker_kind(n):
                 manual_ready.append(nid)  # plan nodes need a router, not a worker
                 continue
             sk = graph.segment_key(n)
@@ -1772,7 +1812,8 @@ def plan(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[D
                 deferred.append({"node": nid, "why": "disk", "avail_gb": tight["avail_gb"]})
                 stale_ok.add(nid)
                 continue
-            spec = read_spec(n.get("spec"), repo, runner)
+            spec = auto_review_spec(lid, nid, n, nodes) if n.get("review_of") and not n.get("spec") \
+                else read_spec(n.get("spec"), repo, runner)
             if spec.get("error"):
                 if is_retry:
                     continue  # still listed as dispatch_rejected
@@ -1836,10 +1877,94 @@ def plan(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[D
             if route_why:
                 route = dict(route, why=route_why)
             actions.append({"type": "auto_dispatch", "line": lid, "node": nid, "route": route, "base": base,
-                            "name": name, "spec_ref": n["spec"], "spec_bytes": len(text), "argv": argv,
+                            "name": name, "spec_ref": n.get("spec") or "auto-review:%s" % n.get("review_of"),
+                            "spec_bytes": len(text), "argv": argv,
                             "argv_hash": argv_hash(argv),
                             "retry": int(retry_ok[nid].get("tries") or 0) if is_retry else 0,
                             "router": router_bucket(line)["handle"]})
+
+        # R3: a fresh PASS delivery goes through the mechanical gate; passed -> 1-3 Terra max review nodes,
+        # planned and dispatched this round; failed -> the router hears what is missing
+        if ((project.get("defaults") or {}).get("auto_review") or {}).get("enabled", True) is not False:
+            gated = 0
+            for nid in sorted(nodes):
+                if gated >= review_gate.GATE_PER_ROUND or not gate_due(nodes, nid):
+                    continue
+                n = nodes[nid]
+                gkey = "review_gate:%s:%s:%s" % (lid, nid, n.get("delivered_at"))
+                if gkey in observed:
+                    continue
+                gated += 1
+                refs_n = n.get("refs") or {}
+                head, report = refs_n.get("head"), refs_n.get("report")
+                spec_g = read_spec(n.get("spec"), repo, runner) if n.get("spec") else {"error": "no spec"}
+                stext, header = ("", {}) if spec_g.get("error") else (spec_g["text"], spec_g["header"])
+                git = review_gate.Git(repo, runner, prereq_remote)
+                g = review_gate.gate(stext, header, head, report, git)
+                rh = router_bucket(line)["handle"]
+                if not g["ok"] and not g["fails"]:
+                    findings.append({"line": lid, "node": nid, "code": "review_gate_unchecked", "unknown": g["unknown"]})
+                    continue
+                if not g["ok"]:
+                    findings.append({"line": lid, "node": nid, "code": "review_gate_fail", "fails": g["fails"]})
+                    actions.append({"type": "review_gate", "line": lid, "node": nid, "key": gkey, "fails": g["fails"],
+                                    "router": rh})
+                    continue
+                base = header.get("base_head")
+                if not base:
+                    mb = git.run(["merge-base", line.get("base_branch") or spec_g.get("branch") or "HEAD", head])
+                    base = mb[1].strip() if mb and mb[0] == 0 and mb[1].strip() else None
+                ds = review_gate.diff_stat(git, base, head)
+                k, why = review_gate.reviewer_count(header, n, ds["paths"] if ds else list(n.get("touched") or []),
+                                                    ds["lines"] if ds else None, report)
+                rnd = sum(1 for h in n.get("history") or [] if h.get("kind") == "node_deliver")
+                on = (n.get("route") or {}).get("on") or (header.get("route") or {}).get("on") or snap.remote_host()
+                route = dict(review_gate.REVIEW_ROUTE, on=on)
+                plans = []
+                for i in range(1, k + 1):
+                    rid = review_gate.review_id(nid, rnd, i)
+                    if rid in nodes:
+                        continue
+                    plans.append({"kind": "node_plan", "line": lid, "node": rid, "node_kind": "review",
+                                  "review_of": nid, "review_head": head, "review_report": report,
+                                  "review_base": base, "deps": [nid], "route": route, "auto_dispatch": True,
+                                  "title": "独立审查 %s（%d/%d）" % (nid, i, k),
+                                  "summary": _short("交付过了机械门，排第 %d/%d 个独立审查：%s" % (i, k, nid))})
+                if not plans:
+                    continue
+                findings.append({"line": lid, "node": nid, "code": "review_planned", "reviewers": len(plans),
+                                 "why": why})
+                actions.append({"type": "review_plan", "line": lid, "node": nid, "key": gkey, "plans": plans,
+                                "why": why, "tested_head": g["tested_head"], "router": rh})
+                for i, pl in enumerate(plans, 1):
+                    if cap is not None and len(busy) + len(dispatched_now) >= cap:
+                        break   # planned and ready: a later round dispatches it
+                    rid = pl["node"]
+                    text = review_gate.review_spec(lid, nid, rid, i, len(plans), head, report, base, n.get("spec"),
+                                                   SNIPPET_MARKER)
+                    name = worktree_name(lid, rid, now)
+                    rbase = line.get("base_branch") or spec_g.get("branch") or head
+                    argv = start_argv(text, route, dict(line, router=rh, repo=line_repo(project, line)),
+                                      {"id": rid, "title": pl["title"]}, rbase, name)
+                    dispatched_now.add(rid)
+                    actions.append({"type": "auto_dispatch", "line": lid, "node": rid, "route": route, "base": rbase,
+                                    "name": name, "spec_ref": "auto-review:%s" % nid, "spec_bytes": len(text),
+                                    "argv": argv, "argv_hash": argv_hash(argv), "retry": 0, "router": rh})
+        for nid, n in sorted(nodes.items()):
+            if n.get("review_by") != "auto" or (_age(now, n.get("reviewed_at")) or 0) > 24 * 3600:
+                continue
+            key = "auto_review_done:%s:%s" % (lid, nid)
+            if any(e.get("reason") == "auto_review_done" and (e.get("refs") or {}).get("key") == key
+                   and (e.get("at") or "") >= (n.get("reviewed_at") or "") for e in nudges):
+                continue
+            ar = n.get("auto_reviews") or {}
+            worst = next((v for v in ar.values() if v.get("outcome") == n.get("review")), {})
+            h_ = ((((live or {}).get("routers") or {}).get(lid) or {}).get("handle")) or line.get("router")
+            a_ = alerts.setdefault(h_, {"line": lid, "target": h_, "texts": [], "keys": []})
+            a_["texts"].append("%s 独立审查结论 %s（%d 个审查取最严）：%s%s；请据此排下一步" % (
+                nid, n.get("review"), len(ar), _short(worst.get("summary") or "", 150),
+                ("（问题：%s）" % "，".join(worst.get("failures") or [])[:120]) if worst.get("failures") else ""))
+            a_["keys"].append((lid, key, "auto_review_done"))
 
         # S1 + S3: ready nodes nobody is dispatching are reported, whether or not other nodes run
         listed = []   # (node, code, short reason, key, nudge reason, since)
@@ -1975,7 +2100,7 @@ def plan(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[D
 
         unrev_old, unrev_all = [], 0
         for nid, n in sorted(nodes.items()):
-            if n.get("status") in ("delivered", "failed") and not n.get("review"):
+            if n.get("status") in ("delivered", "failed") and not n.get("review") and not review_nodes_for(nodes, nid):
                 unrev_all += 1
                 age = _age(now, n.get("delivered_at"))
                 if age is not None and age > UNREVIEWED_S:
@@ -2242,7 +2367,41 @@ def execute(store: snap.Store, result: Dict[str, Any], now: _dt.datetime, runner
             continue
         notices.setdefault(a["router"], []).append(
             "代派前核对 %s/%s：%s；已记等上游（dep），缺的出现后巡检自动派" % (a["line"], a["node"], a["summary"][:160]))
+        notice_lines.setdefault(a["router"], a["line"])
         done.append({"type": "prereq_block", "line": a["line"], "node": a["node"], "missing": a["missing"]})
+
+    for a in result["actions"]:
+        if a["type"] not in ("review_gate", "review_plan"):
+            continue
+        ok = a["type"] == "review_plan"
+        ev = {"kind": "observe", "line": a["line"], "node": a["node"], "code": "review_gate", "gate_ok": ok,
+              "refs": {"key": a["key"]},
+              "summary": _short("交付过了机械门，排 %d 个独立审查" % len(a["plans"]) if ok
+                                else "交付没过机械门：" + "；".join(a["fails"]))}
+        ev.update({"reviewers": [pl["node"] for pl in a["plans"]], "why": a["why"]} if ok else {"fails": a["fails"]})
+        try:
+            write(ev)
+        except core.ProgressError as exc:
+            done.append({"type": a["type"], "node": a["node"], "error": exc.as_dict()})
+            continue
+        notice_lines.setdefault(a["router"], a["line"])
+        if not ok:
+            notices.setdefault(a["router"], []).append(
+                "%s/%s 的交付没过机械门：%s。请让 worker 补齐后重新 deliver，或排返工节点（报告要写 head=<测过的 sha>、"
+                "每个验收项的结果和命令输出尾部、前置条件每项的结论）" % (a["line"], a["node"], "；".join(a["fails"])[:300]))
+            done.append({"type": "review_gate", "line": a["line"], "node": a["node"], "fails": a["fails"]})
+            continue
+        planned = []
+        for pl in a["plans"]:
+            try:
+                write(pl)
+                planned.append(pl["node"])
+            except core.ProgressError as exc:
+                done.append({"type": "review_plan", "node": pl["node"], "error": exc.as_dict()})
+        notices.setdefault(a["router"], []).append(
+            "%s/%s 的交付过了机械门，巡检已排 %d 个 Terra max 独立审查（%s）；结论齐了巡检转告你，你不用自己审" % (
+                a["line"], a["node"], len(planned), "，".join(a["why"]) or "小改动"))
+        done.append({"type": "review_plan", "line": a["line"], "node": a["node"], "reviewers": planned})
 
     for a in result["actions"]:
         if a["type"] != "auto_dispatch":

@@ -52,12 +52,14 @@ SUMMARY_MAX = 120
 ROLE_KINDS = {
     "router": {"node_plan", "node_dispatch", "node_review", "node_supersede", "node_cancel",
                "node_block", "node_deliver", "node_heartbeat", "milestone_claim", "graph_propose"},
-    "worker": {"node_heartbeat", "node_deliver", "node_block"},
+    # node_review only from an automatic review node's worker, on the node it reviews (R3; validate() checks)
+    "worker": {"node_heartbeat", "node_deliver", "node_block", "node_review"},
     "coordinator": {"line_open", "line_close", "project_update", "milestone_confirm",
                     "milestone_reject", "node_plan", "node_cancel", "node_supersede", "graph_propose"},
     # patrol's node_deliver is only for decide nodes (panel agreement / human pick); validate() enforces it
+    # patrol's node_plan is only for automatic review nodes after a delivery passed the gate (R3)
     "patrol": {"nudge", "auto_dispatch", "observe", "node_block", "worker_release", "node_deliver",
-               "decision", "human_reply"},
+               "decision", "human_reply", "node_plan"},
     "import": {"node_plan", "node_dispatch", "node_deliver", "node_review", "node_block",
                "node_supersede", "node_cancel", "line_open", "line_close"},
     "human": set(KINDS),
@@ -393,6 +395,17 @@ def validate(event: Dict[str, Any], project: Dict[str, Any], state: Dict[str, An
         elif not (event.get("refs") or {}).get("card"):
             bad("patrol_deliver", "巡检写 decide 节点的 node_deliver 必须带 refs.card")
     # (the 11-06 early_deliver gate on PARTIAL/FAIL is gone: R2 refuses those deliveries outright)
+    if kind == "node_plan" and line:
+        rof = event.get("review_of")
+        if role == "patrol" and (event.get("node_kind") != "review" or not rof):
+            bad("patrol_plan", "巡检只能为审查节点写 node_plan（node_kind=review，带 review_of）")
+        if rof and rof not in nodes:
+            bad("unknown_node", "review_of 指向的节点 %s 还没有 node_plan" % rof)
+    rnode = event.get("review_node")
+    if kind == "node_review" and role == "worker" and not rnode:
+        bad("role_kind", "worker 只能以自动审查节点的身份写审查结论（--review-node <审查节点>）")
+    if rnode and kind == "node_review" and not (rnode in nodes and nodes[rnode].get("review_of") == node):
+        bad("bad_review_node", "%s 不是审查 %s 的节点" % (rnode, node))
     if kind == "worker_release" and node and node not in nodes:
         bad("unknown_node", "节点 %s 还没有 node_plan" % node)
     if kind == "node_supersede":
@@ -427,7 +440,8 @@ def validate(event: Dict[str, Any], project: Dict[str, Any], state: Dict[str, An
         if not any(_same(handle, (core_of(project, c) or {}).get("coordinator")) for c in core_ids):
             bad("not_coordinator", "句柄 %s 不是对应核心的协调人" % handle)
     elif role == "worker" and node in nodes:
-        n = nodes[node]
+        # an automatic reviewer answers for its own review node, not for the node it reviews
+        n = nodes[rnode] if kind == "node_review" and rnode in nodes else nodes[node]
         ok = _same(handle, n.get("worker")) or (
             actor.get("workspace") and n.get("worktree") and
             (actor["workspace"] == n["worktree"] or actor["workspace"].endswith(n["worktree"]) or
@@ -675,6 +689,9 @@ def fold(project: Dict[str, Any], events: List[Dict[str, Any]], at: Optional[str
                 n["kind"] = ev.get("node_kind") if ev.get("node_kind") in NODE_KINDS_RUN else infer_node_kind(ev["node"])
                 n["milestones"] = list(ev.get("milestones") or ([ev["milestone"]] if ev.get("milestone") else []))
                 n["planned_at"] = n.get("planned_at") or at_ev
+                for k in ("review_of", "review_head", "review_report", "review_base"):
+                    if ev.get(k):
+                        n[k] = ev[k]
                 n["status_unknown"] = bool(ev.get("status_unknown"))
                 if n["status"] not in ("running", "delivered", "reviewed"):
                     n["status"] = "planned"
@@ -714,14 +731,27 @@ def fold(project: Dict[str, Any], events: List[Dict[str, Any]], at: Optional[str
                 n["status"] = "failed" if ev.get("outcome") == "FAIL" else "delivered"
                 n["model"] = (ev.get("actor") or {}).get("model") or n.get("model")
                 n["result"] = ev.get("result")
+                n.pop("auto_reviews", None)    # R3: a new delivery is reviewed afresh
+                n.pop("review_pending", None)
                 if ev.get("outcome") == "BLOCKED":   # R2: a blocked delivery leaves the node blocked, not delivered
                     n["status"] = "blocked"
                     n["blocker"] = ev.get("blocker")
                     n["blocked_at"] = at_ev
                     n["blocked_by"] = ev.get("blocked_by")
+            elif kind == "node_review" and ev.get("review_node"):
+                # R3: one automatic reviewer's verdict; the node's review is settled after the loop
+                rid = ev["review_node"]
+                n.setdefault("auto_reviews", {})[rid] = {
+                    "outcome": ev.get("outcome"), "at": at_ev, "summary": ev.get("summary"),
+                    "failures": [str(x) for x in ev.get("failures") or [] if str(x).strip()][:20]}
+                if rid in ls["nodes"]:
+                    r = ls["nodes"][rid]
+                    r.update(status="reviewed", outcome="PASS", review="PASS", delivered_at=at_ev,
+                             reviewed_at=at_ev, verdict=ev.get("outcome"))
             elif kind == "node_review":
                 n["review"] = ev.get("outcome")
                 n["reviewed_at"] = at_ev
+                n["review_by"] = (ev.get("actor") or {}).get("role")
                 n["status"] = "failed" if ev.get("outcome") == "FAIL" else "reviewed"
             elif kind == "node_block":
                 n["status"] = "blocked"
@@ -752,6 +782,8 @@ def fold(project: Dict[str, Any], events: List[Dict[str, Any]], at: Optional[str
             elif kind == "milestone_reject":
                 m["status"] = "open"
                 m["rejected"] = rec
+    for ls in lines.values():
+        _settle_auto_reviews(ls["nodes"])
     # ready = planned with all deps met
     for ls in lines.values():
         nodes = ls["nodes"]
@@ -783,6 +815,38 @@ def fold(project: Dict[str, Any], events: List[Dict[str, Any]], at: Optional[str
         "feed": feed,
         "event_count": len(events),
     }
+
+
+REVIEW_STRICT = {"PASS": 0, "UNKNOWN": 1, "PARTIAL": 2, "FAIL": 3}
+
+
+def _settle_auto_reviews(nodes: Dict[str, Any]) -> None:
+    """R3: a delivery reviewed by automatic review nodes gets the strictest verdict once every review node planned
+    for it (not cancelled/superseded) has answered; until then it stays delivered with review_pending. A router
+    review written after the last automatic verdict wins."""
+    for nid, n in nodes.items():
+        ar = n.get("auto_reviews")
+        if not ar:
+            continue
+        last = max(v.get("at") or "" for v in ar.values())
+        if n.get("review_by") and (n.get("reviewed_at") or "") > last:
+            continue
+        since = n.get("delivered_at") or ""
+        expected = [rid for rid, r in nodes.items() if r.get("review_of") == nid
+                    and (r.get("planned_at") or "") >= since and r.get("status") not in ("superseded", "cancelled")]
+        pending = sorted(r for r in expected if r not in ar)
+        if pending:
+            n["review_pending"] = pending
+            continue
+        n.pop("review_pending", None)
+        worst = max((v.get("outcome") for v in ar.values() if v.get("outcome") in REVIEW_STRICT),
+                    key=lambda o: REVIEW_STRICT[o], default=None)
+        if worst is None:
+            continue
+        n["review"] = worst
+        n["reviewed_at"] = last
+        n["review_by"] = "auto"
+        n["status"] = "failed" if worst == "FAIL" else "reviewed"
 
 
 def load_live(pid: str) -> Optional[Dict[str, Any]]:

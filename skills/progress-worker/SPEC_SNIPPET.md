@@ -3,6 +3,7 @@
 本节点：主线 `{line}`，节点 `{node}`。命令 `progress`（没有就用 `~/.progress/bin/progress`）。
 - 开工前（以及中断、换终端、上下文压缩后）先运行 `progress-inspect resume --line {line} --node {node}` 读节点历史和本线经验；经验里写了的规则照做。
 - 交付：**先**写 `progress deliver --line {line} --node {node} --outcome PASS|BLOCKED --report <REPORT 路径> --head <git sha> --summary "一句白话"`，**再**给 router 发 worker_done；顺序不能反。只有两种结果：做完是 PASS（实验做完但研究结果不达标也是 PASS，加 `--result negative`）；被挡住是 BLOCKED，加 `--blocker dep|env|human|budget|design --blocked-by "还差什么"`。PARTIAL、FAIL 会被拒收。
+- 报告必须写明三样，交付后巡检先机械核对，过了才派独立审查（不是作者的新会话，只读说明、报告和改动），没过会退回让你补：测试时的版本写一行 `head=<sha>`（之后只许再改报告所在目录的文件）；说明里每个验收项（按 id）的结果，并用代码块贴命令输出的尾部；「前置条件」里每一项的结论（写出它的节点名、sha 或路径）。
 - `progress deliver` 会自动把本分支推到 GitHub origin（不推 main）：交付前先 `git commit`；输出里出现 `push_failed` 就按原因修好（或在交付消息里写明），不要原样反复重试。
 - 交付时报并行信号（巡检据此叫 router 拆分或判定撞车）：`--failure "<错误类别或测试名>"`，写类别不写描述（如 `CG16_BINDING_MISSING`、`test_jacobi_single`，40 字以内），同一种失败在不同节点用同一个词，巡检才能归并；只写交付时仍没解决、还要有人动手的失败，每个不同的一条，已修好的不写；`--candidate "<候选>"`，只写还没做、彼此独立、能分给别人并行做的方向，每个一条，已经跑过的不写；`--touched <路径1,路径2>`，写实际改了的文件。没有就省略该项，`--touched` 只要改了文件就必须写。
 - 做不完就接着做，不先交一部分：预算没用完、剩下的验收条目不靠别人的活，就做完再交。预算用完报 `BLOCKED --blocker budget`，`--blocked-by` 写剩下的工作量；缺别的节点或文件的产物报 dep，等裁决报 design，环境坏了报 env，只有人本人能给的报 human。以"等裁定"为由报 BLOCKED 之前，先重跑一次 `progress-inspect resume --line {line} --node {node}`，看协调人和 router 在你开工后有没有已经裁了（project_update）；已裁的按裁定接着做完。
