@@ -473,6 +473,55 @@ class Wake(Base):
         self.runner.rules = orca_rules()                                 # back on the main session: wakes again
         self.assertEqual(self.waker(T0.timestamp() + 600).run()["action"], "woke")
 
+    def test_parked_on_a_subagent_with_text_in_the_box_is_still_caught(self):
+        # 11-07: once "/clear" sat in the box the "Message @" hint was gone; only the titled rule was left
+        tail = ["\u2500" * 50 + " Daily literature scan 11-07 \u2500", "\u276f /clear /clear", "\u2500" * 60,
+                "  [Opus 5.5] \u2502 dse-rsi"]
+        self.assertEqual(lead_wake.prompt_box(tail), ("Daily literature scan 11-07", ""))
+        self.runner.rules = orca_rules(tail=tail)
+        self.assertEqual(self.waker(T0.timestamp()).run()["why"], "subagent_view")
+        self.assertEqual(self.sends(), [])
+        out = [m for m in lead.read_jsonl(str(self.home / "inbox.jsonl")) if m["dir"] == "out"]
+        self.assertIn("切回主会话", out[0]["text"])
+
+    def test_prompt_box_reads_main_session_states(self):
+        rule = "\u2500" * 60
+        self.assertEqual(lead_wake.prompt_box(["done", rule, "\u276f", rule, "  [Opus 5.5]"]), (None, ""))
+        self.assertEqual(lead_wake.prompt_box([rule, "\u276f Try \"fix lint errors\"", rule]), (None, ""))
+        self.assertEqual(lead_wake.prompt_box(["\u276f old prompt in the transcript", "answer", rule,
+                                               "\u276f half typed", "  second line", rule, "  footer"]),
+                         (None, "half typed second line"))
+        self.assertEqual(lead_wake.prompt_box(["no box here"]), (None, ""))
+
+    def test_leftover_input_is_not_glued_to_the_wake(self):
+        rule = "\u2500" * 60
+        self.runner.rules = orca_rules(tail=[rule, "\u276f \u3010\u9879\u76ee\u8d1f\u8d23\u4eba\u4e00\u8f6e", rule])
+        r = self.waker(T0.timestamp()).run()
+        self.assertEqual((r["action"], r["why"]), ("skip", "input_not_empty"))
+        self.assertEqual(self.sends(), [])
+        self.assertEqual(self.waker(T0.timestamp() + 300).run()["why"], "input_not_empty")
+        out = [m for m in lead.read_jsonl(str(self.home / "inbox.jsonl")) if m["dir"] == "out"]
+        self.assertEqual(len(out), 1)                                    # same text: one alert per interval
+        self.assertIn("清空输入框", out[0]["text"])
+        self.runner.rules = orca_rules()
+        self.assertEqual(self.waker(T0.timestamp() + 600).run()["action"], "woke")
+
+    def test_wake_that_did_not_start_a_cycle_is_reported_within_minutes(self):
+        self.runner.rules = orca_rules()
+        self.assertEqual(self.waker(T0.timestamp()).run()["action"], "woke")
+        self.assertEqual(self.waker(T0.timestamp() + 600).run()["why"], "not_due")
+        out = lambda: [m for m in lead.read_jsonl(str(self.home / "inbox.jsonl")) if m["dir"] == "out"]
+        self.assertEqual(out(), [])                                      # still inside the 15-minute gap
+        self.runner.rules = orca_rules(tail=["\u2500" * 9 + " scan \u2500", "\u276f\xa0Message @x\u2026"])
+        self.assertEqual(self.waker(T0.timestamp() + 1200).run()["why"], "not_due")   # not due, still reported
+        self.assertEqual(len(out()), 1)
+        self.assertIn("20 分钟", out()[0]["text"])
+        self.assertIn("子代理「scan」", out()[0]["text"])
+        self.waker(T0.timestamp() + 1500).run()
+        self.assertEqual(len(out()), 1)                                  # once per wake
+        lead.save_json(str(self.home / "cycle.json"), {"state": "done", "started": "2026-01-10T08:01:00Z", "n": 5})
+        self.assertEqual(lead.load_json(str(self.home / "wake.json"))["alerted_nostart"], T0.timestamp())
+
     def test_main_takes_lock_and_runs(self):
         self.runner.rules = orca_rules()
         r = lead_wake.main(["--project", self.PID], runner=self.runner, sleep=lambda s: None)

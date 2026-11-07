@@ -23,9 +23,11 @@ import lead  # noqa: E402
 
 DEFAULT_PROMPT = ("【项目负责人一轮｜唤醒原因：{reason}】读 {boot}，按其中步骤完成一轮"
                   "（第一步 `{lead} cycle start --reason {reason}`，最后一步 `{lead} cycle end ...`）。")
-NOSTART_GAP_S = 1800        # a wake that has not turned into a cycle after this long gets one alert
+NOSTART_GAP_S = 900         # a wake that has not turned into a cycle after this long gets one alert (checked every run)
 SUBVIEW_RE = re.compile(r"^\s*\u276f\s*Message @\S")          # "❯ Message @general-purpose…"
 SUBVIEW_TITLE_RE = re.compile(r"\u2500\s+([^\u2500]+?)\s+\u2500+\s*$")   # "──── Daily literature scan ─"
+RULE_RE = re.compile(r"^\s*\u2500{3,}")                         # the rules around the input box
+PLACEHOLDER_RE = re.compile(r"^Try \"")                           # a fresh session's grey hint, not typed text
 REALERT_S = 6 * 3600        # launch-failure / busy alerts repeat at most this often
 
 
@@ -42,6 +44,28 @@ def log(msg, pid=""):
             fh.write("%s %s%s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "[%s] " % pid if pid else "", msg))
     except OSError:
         pass
+
+
+def prompt_box(tail):
+    """-> (subagent name or None, text sitting in the input box) from the last screen lines.
+    On a subagent's transcript the rule above the box carries its name ("──── Daily literature scan 11-07 ─") and an
+    empty box reads "Message @<agent>…"; once text is in the box only the titled rule is left (11-07: the lead sat
+    there with "/clear /clear" in the box and four timer wakes went to the subagent)."""
+    i = max([k for k, line in enumerate(tail) if line.lstrip().startswith("\u276f")] or [-1])
+    if i < 0:
+        return None, ""
+    above = tail[i - 1] if i else ""
+    m = SUBVIEW_TITLE_RE.search(above) if RULE_RE.search(above) else None
+    sub = m.group(1).strip() if m else ("" if SUBVIEW_RE.search(tail[i]) else None)
+    parts = [tail[i].lstrip()[1:].strip()]
+    for line in tail[i + 1:]:
+        if RULE_RE.search(line):
+            break
+        parts.append(line.strip())
+    typed = " ".join(x for x in parts if x)
+    if sub is not None or PLACEHOLDER_RE.search(typed):
+        typed = ""
+    return sub, typed
 
 
 def due_reason(now, last_wake, n_unread, conf, force=False, wake_off=False):
@@ -103,17 +127,19 @@ class Waker:
             return None
         return t
 
-    def subagent_view(self, handle):
-        """Name of the subagent whose transcript the TUI shows ("" if unnamed), or None when on the main session.
-        Claude Code's input box reads "Message @<agent>…" there; a wake typed into it never reaches the lead."""
-        r = self.orca("terminal", "read", "--terminal", handle, "--limit", "8", timeout=30)
+    def screen(self, handle):
+        """-> prompt_box() of the terminal's last lines: (subagent name or None, leftover input)."""
+        r = self.orca("terminal", "read", "--terminal", handle, "--limit", "12", timeout=30)
         tail = ((r.get("result") or {}).get("terminal") or {}).get("tail") or [] if r.get("ok") else []
-        for i, line in enumerate(tail):
-            if SUBVIEW_RE.search(line):
-                prev = tail[i - 1] if i else ""
-                m = SUBVIEW_TITLE_RE.search(prev)
-                return m.group(1).strip() if m else ""
-        return None
+        return prompt_box(tail)
+
+    @staticmethod
+    def cause(sub, typed):
+        if sub is not None:
+            return "终端停在子代理%s的对话框里，打进去的字都给了子代理" % ("「%s」" % sub if sub else "")
+        if typed:
+            return "输入框里有没发出去的文字「%s」" % (typed[:40] + ("…" if len(typed) > 40 else ""))
+        return ""
 
     def launch(self):
         conf = self.ctx.conf
@@ -148,20 +174,24 @@ class Waker:
         n_unread = len(lead.unread(lead.read_jsonl(ctx.inbox)))
         wake_off = os.path.exists(os.path.join(ctx.home, "WAKE_OFF"))
         reason = due_reason(now, last, n_unread, conf, force, wake_off)
+        cy = lead.load_json(ctx.cycle, {}) or {}
+        # an earlier wake that never turned into a cycle: say so once, on the first run past the gap (not only when the
+        # next wake is due two hours later), with what the screen shows
+        if last and ts(cy.get("started")) < last and now - last > NOSTART_GAP_S and st.get("alerted_nostart") != last:
+            why = self.cause(*self.screen(conf["terminal"])) if conf.get("terminal") else ""
+            self.qq("上次唤醒（%s）过了 %d 分钟，会话还没开始一轮%s，请看一下终端 %s" % (
+                ctx.show(lead.dt.datetime.fromtimestamp(last, lead.dt.timezone.utc)), (now - last) // 60,
+                "：" + why if why else "", conf.get("terminal")))
+            st["alerted_nostart"] = last
+            lead.save_json(ctx.wake, st)
         if not reason:
             return {"action": "skip", "why": "wake_off" if wake_off else "not_due"}
-        cy = lead.load_json(ctx.cycle, {}) or {}
         blocks, age = running_blocks(now, cy, conf)
         if blocks:
             log("skip %s: cycle %s running %.0f min" % (reason, cy.get("n"), age / 60), ctx.pid)
             return {"action": "skip", "reason": reason, "why": "running"}
         if cy.get("state") == "running":
             log("cycle %s stale (%.0f min), waking anyway" % (cy.get("n"), age / 60), ctx.pid)
-        # an earlier wake that never turned into a cycle: say so once
-        if last and ts(cy.get("started")) < last and now - last > NOSTART_GAP_S and st.get("alerted_nostart") != last:
-            self.qq("上次唤醒（%s）后会话没有开始一轮，请看一下终端 %s" % (ctx.show(lead.dt.datetime.fromtimestamp(
-                last, lead.dt.timezone.utc)), conf.get("terminal")))
-            st["alerted_nostart"] = last
         handle = conf.get("terminal")
         t = self.terminal_ok(handle) if handle else None
         fresh = False
@@ -195,16 +225,20 @@ class Waker:
             log("skip %s: terminal busy" % reason, ctx.pid)
             return {"action": "skip", "reason": reason, "why": "busy"}
         st.pop("busy_since", None)
-        sub = self.subagent_view(handle)
-        if sub is not None:
-            # the TUI shows a subagent's transcript: anything typed now goes to that subagent, not the lead
-            if now - float(st.get("alerted_subview", 0)) > REALERT_S:
-                self.qq("负责人终端停在子代理%s的对话框里，唤醒会发给子代理而不是负责人；请在终端里切回主会话"
-                        "（或停掉这个子代理）" % ("「%s」" % sub if sub else ""))
-                st["alerted_subview"] = now
+        sub, typed = self.screen(handle)
+        if sub is not None or typed:
+            # a subagent's transcript, or text already in the box: a wake typed now would go to the subagent or be glued
+            # onto that text. Do not send; last_wake stays, so the wake goes out on the first run after it is cleared.
+            why = "subagent_view" if sub is not None else "input_not_empty"
+            gap = min(REALERT_S, float(conf.get("interval_s") or REALERT_S))
+            key = "%s:%s" % (why, sub if sub is not None else typed[:40])
+            if st.get("alerted_screen_key") != key or now - float(st.get("alerted_screen", 0)) > gap:
+                self.qq("没法唤醒负责人：%s。请在终端 %s 里%s，之后 5 分钟内会自动唤醒" % (
+                    self.cause(sub, typed), handle, "切回主会话" if sub is not None else "清空输入框"))
+                st["alerted_screen"], st["alerted_screen_key"] = now, key
             lead.save_json(ctx.wake, st)
-            log("skip %s: terminal shows subagent view %s" % (reason, sub or "?"), ctx.pid)
-            return {"action": "skip", "reason": reason, "why": "subagent_view"}
+            log("skip %s: %s %s" % (reason, why, sub if sub is not None else typed[:60]), ctx.pid)
+            return {"action": "skip", "reason": reason, "why": why}
         if not fresh:
             r = self.orca("terminal", "send", "--terminal", handle, "--text", "/clear", "--enter", timeout=30)
             if not r.get("ok"):
