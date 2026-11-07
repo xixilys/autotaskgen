@@ -361,6 +361,13 @@ class MapSections(unittest.TestCase):
         self.assertIn("等人（blocker=human）", txt)
         self.assertNotIn("标错", txt)
 
+    def test_stale_state_flag_has_a_plain_name(self):
+        proj, st = self.fold()
+        evs = self.evs + [{"kind": "node_plan", "line": "Q", "node": "w", "at": at(10), "actor": {"role": "router", "handle": R}}]
+        rows, flagged = sup.hard_metrics(proj, st, evs, {"metrics": {}}, NOW, {"Q": {"state": {"mtime": "2026-11-03T00:00:00Z"}}})
+        self.assertIn("Q:状态记录", flagged)
+        self.assertIn("⚠状态记录 36h 前更新", next(r for r in rows if r.startswith("- Q")))
+
     def test_hard_metrics_flags_and_wait_not_stall(self):
         evs = self.evs + [{"kind": "node_block", "line": "Q", "node": "w", "blocker": "human", "at": at(300),
                            "actor": {"role": "router", "handle": R}, "summary": "等授权"}]
@@ -485,6 +492,11 @@ class ReportV2(Base):
         doc = json.loads(v2(findings=[{"line": "L", "metric": "审查/执行", "value": "0.3", "verdict": "real", "evidence": "e"}]))
         clean, _ = sup.validate_report(doc, ["L", "Q"], [], ["L:审查/执行", "L:等人", "Q:打回"])
         self.assertEqual(clean["missing_metric_verdicts"], ["L:等人", "Q:打回"])
+
+    def test_plain_worded_stale_state_verdict_is_not_missing(self):
+        doc = json.loads(v2(findings=[{"line": "L", "metric": "状态记录陈旧", "value": "7h", "verdict": "real", "evidence": "e"}]))
+        clean, _ = sup.validate_report(doc, ["L", "Q"], [], ["L:状态记录"])
+        self.assertEqual(clean["missing_metric_verdicts"], [])
 
     def test_other_majority_warns_but_passes(self):
         doc = json.loads(v2())

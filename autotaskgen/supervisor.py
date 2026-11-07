@@ -516,7 +516,9 @@ def hard_metrics(project: Dict[str, Any], state: Dict[str, Any], events: List[Di
             if lastr:
                 a, b = _ev_t(d["mtime"]), _ev_t(lastr)
                 lag = max(0.0, (b - a).total_seconds() / 3600.0) if a and b else None
-            flag("stale_state", "STATE %.0fh 前" % (_hrs(now, d["mtime"]) or 0), lag, "stale_state_h")
+            # plain name: terra is told to write metric names in plain words ("状态记录陈旧"), and a
+            # verdict only counts when the flag name is a substring of what it wrote
+            flag("状态记录", "%.0fh 前更新，落后最后一条调度事件" % (_hrs(now, d["mtime"]) or 0), lag, "stale_state_h")
         act = [n for n in nodes.values() if n.get("status") in ACTIVE]
         un = sum(1 for n in act if not n.get("milestones"))
         ratio = un / len(act) if act else 0
