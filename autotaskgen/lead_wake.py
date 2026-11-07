@@ -14,6 +14,7 @@ Project/state dir resolution and settings: the same as lead.py (--project, LEAD_
 import argparse
 import json
 import os
+import re
 import sys
 import time
 
@@ -23,6 +24,8 @@ import lead  # noqa: E402
 DEFAULT_PROMPT = ("【项目负责人一轮｜唤醒原因：{reason}】读 {boot}，按其中步骤完成一轮"
                   "（第一步 `{lead} cycle start --reason {reason}`，最后一步 `{lead} cycle end ...`）。")
 NOSTART_GAP_S = 1800        # a wake that has not turned into a cycle after this long gets one alert
+SUBVIEW_RE = re.compile(r"^\s*\u276f\s*Message @\S")          # "❯ Message @general-purpose…"
+SUBVIEW_TITLE_RE = re.compile(r"\u2500\s+([^\u2500]+?)\s+\u2500+\s*$")   # "──── Daily literature scan ─"
 REALERT_S = 6 * 3600        # launch-failure / busy alerts repeat at most this often
 
 
@@ -99,6 +102,18 @@ class Waker:
         if not t or not t.get("connected") or t.get("orphaned"):
             return None
         return t
+
+    def subagent_view(self, handle):
+        """Name of the subagent whose transcript the TUI shows ("" if unnamed), or None when on the main session.
+        Claude Code's input box reads "Message @<agent>…" there; a wake typed into it never reaches the lead."""
+        r = self.orca("terminal", "read", "--terminal", handle, "--limit", "8", timeout=30)
+        tail = ((r.get("result") or {}).get("terminal") or {}).get("tail") or [] if r.get("ok") else []
+        for i, line in enumerate(tail):
+            if SUBVIEW_RE.search(line):
+                prev = tail[i - 1] if i else ""
+                m = SUBVIEW_TITLE_RE.search(prev)
+                return m.group(1).strip() if m else ""
+        return None
 
     def launch(self):
         conf = self.ctx.conf
@@ -180,6 +195,16 @@ class Waker:
             log("skip %s: terminal busy" % reason, ctx.pid)
             return {"action": "skip", "reason": reason, "why": "busy"}
         st.pop("busy_since", None)
+        sub = self.subagent_view(handle)
+        if sub is not None:
+            # the TUI shows a subagent's transcript: anything typed now goes to that subagent, not the lead
+            if now - float(st.get("alerted_subview", 0)) > REALERT_S:
+                self.qq("负责人终端停在子代理%s的对话框里，唤醒会发给子代理而不是负责人；请在终端里切回主会话"
+                        "（或停掉这个子代理）" % ("「%s」" % sub if sub else ""))
+                st["alerted_subview"] = now
+            lead.save_json(ctx.wake, st)
+            log("skip %s: terminal shows subagent view %s" % (reason, sub or "?"), ctx.pid)
+            return {"action": "skip", "reason": reason, "why": "subagent_view"}
         if not fresh:
             r = self.orca("terminal", "send", "--terminal", handle, "--text", "/clear", "--enter", timeout=30)
             if not r.get("ok"):

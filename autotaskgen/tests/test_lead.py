@@ -342,10 +342,11 @@ class Init(Base):
             self.assertIn(word, text.replace("--done-when", "done_when"))
 
 
-def orca_rules(show=None, idle=True, launch=None, send_ok=True):
+def orca_rules(show=None, idle=True, launch=None, send_ok=True, tail=None):
     def ans(obj):
         return 0, json.dumps(obj), ""
     return [
+        (lambda a: a[1:3] == ["terminal", "read"], ans({"ok": True, "result": {"terminal": {"tail": tail or ["\u276f\xa0"]}}})),
         (lambda a: a[1:3] == ["terminal", "show"], ans(show if show is not None else
                                                      {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": "claude"}}})),
         (lambda a: a[1:3] == ["terminal", "wait"], ans({"ok": True, "result": {"wait": {"satisfied": idle}}})),
@@ -456,6 +457,21 @@ class Wake(Base):
         self.runner.rules = orca_rules(show={"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": "codex"}}})
         self.assertEqual(self.waker(T0.timestamp()).run()["why"], "wrong_agent")
         self.assertEqual(self.sends(), [])
+
+    def test_subagent_view_is_skipped_and_alerted_once(self):
+        sub = ["\u2500" * 20 + " Daily literature scan 11-07 \u2500", "\u276f\xa0Message @general-purpose\u2026",
+               "\u2500" * 40]
+        self.runner.rules = orca_rules(tail=sub)
+        r = self.waker(T0.timestamp()).run()
+        self.assertEqual((r["action"], r["why"]), ("skip", "subagent_view"))
+        self.assertEqual(self.sends(), [])                               # neither /clear nor the prompt
+        self.assertNotIn("last_wake", lead.load_json(str(self.home / "wake.json")))
+        self.assertEqual(self.waker(T0.timestamp() + 300).run()["why"], "subagent_view")
+        out = [m for m in lead.read_jsonl(str(self.home / "inbox.jsonl")) if m["dir"] == "out"]
+        self.assertEqual(len(out), 1)
+        self.assertIn("「Daily literature scan 11-07」", out[0]["text"])
+        self.runner.rules = orca_rules()                                 # back on the main session: wakes again
+        self.assertEqual(self.waker(T0.timestamp() + 600).run()["action"], "woke")
 
     def test_main_takes_lock_and_runs(self):
         self.runner.rules = orca_rules()
