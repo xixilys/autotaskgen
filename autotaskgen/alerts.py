@@ -92,6 +92,30 @@ def _fu_line(text: str) -> str:
     return str(text or "").split("线：", 1)[0] if "线：" in str(text or "") else ""
 
 
+def _fu_twin(a: str, b: str) -> bool:
+    return bool(_fu_line(a)) and _fu_line(a) == _fu_line(b) and difflib.SequenceMatcher(None, a, b).ratio() >= FU_SAME
+
+
+def _fu_dedup(active: Dict[str, str], state: Dict[str, Dict[str, Any]], now: _dt.datetime) -> None:
+    """Two live asks of one line that say the same thing go out once: the one sent longest ago stays, the other
+    leaves `active` (its record, if live, closes silently as merged). 11-07: terra kept both Instabox asks open; the
+    merge below handed the record back and forth between them and the second one went out again as new."""
+    def rank(k: str):
+        r = state.get(k) or {}
+        live = bool(r) and not r.get("resolved_at") and int(r.get("sends") or 0) > 0
+        return (0, str(r.get("first_at") or "~"), k) if live else (1, "~", k)
+    kept: List[str] = []
+    for k in sorted((k for k in active if k.startswith("fu:")), key=rank):
+        twin = next((o for o in kept if _fu_twin(str(active[k]), str(active[o]))), None)
+        if twin is None:
+            kept.append(k)
+            continue
+        del active[k]
+        r = state.get(k)
+        if r is not None and not r.get("resolved_at"):
+            r["resolved_at"], r["merged_into"] = _iso(now), twin
+
+
 def _fu_merge(active: Dict[str, str], state: Dict[str, Dict[str, Any]], now: _dt.datetime) -> None:
     """New fu keys that reword an unresolved fu record of the same line take that record over (in place)."""
     for key in sorted(active):
@@ -104,7 +128,7 @@ def _fu_merge(active: Dict[str, str], state: Dict[str, Dict[str, Any]], now: _dt
             if old == key or not old.startswith("fu:") or orec.get("resolved_at") or not int(orec.get("sends") or 0):
                 continue
             otext = str(orec.get("text") or "")
-            if not _fu_line(text) or _fu_line(text) != _fu_line(otext):
+            if old in active or not _fu_twin(text, otext):
                 continue
             r = difflib.SequenceMatcher(None, text, otext).ratio()
             if r >= score:
@@ -131,6 +155,8 @@ def _sync(active: Dict[str, str], now: _dt.datetime, runner, qq: Optional[Dict[s
             return []
         return [{"code": "qq_unconfigured", "why": "~/.progress/qq.json 缺失：告警不会发到 QQ"}]
     state = load()
+    active = dict(active)
+    _fu_dedup(active, state, now)
     _fu_merge(active, state, now)
     items: List[Dict[str, Any]] = []   # due messages, in send order: new, remind, resolved
     for key in sorted(active):

@@ -355,6 +355,33 @@ class AlertsSync(unittest.TestCase):
         self.sync({"fu:fu_b": b}, 3)
         self.assertEqual(len(r.sent), 2)             # the merged-away key never says "[不用再管]"
 
+    def test_two_live_rewordings_of_one_ask_send_once(self):
+        r = self.runner()
+        self.fr = r
+        a = "EVB 线：请在 Instabox 启动 ib-agent-2，供 EVB 继续独立综合校准；不恢复该机器，面积与功耗模型的独立校准无法继续。"
+        b = "EVB 线：请在 Instabox 恢复 ib-agent-2，或说明目前无法恢复的原因；在机器恢复并通过资源检查前，EVB 无法继续独立面积与功耗校准。"
+        self.sync({"fu:fu_a": a}, 0)
+        self.sync({}, 0.5)
+        self.sync({"fu:fu_b": b}, 0.8)               # takes fu_a's record over
+        self.sync({"fu:fu_a": a, "fu:fu_b": b}, 1.2)  # 11-07: both live again -> fu_a went out again as new
+        self.assertEqual(len(r.sent), 1)
+        self.sync({"fu:fu_a": a, "fu:fu_b": b}, 2.1)  # one reminder, paced from the first send
+        self.assertEqual(len(r.sent), 2)
+        self.assertIn("已持续 2 小时", r.sent[-1])
+        self.assertNotIn("\n", r.sent[-1])
+        self.sync({"fu:fu_a": a, "fu:fu_b": b}, 2.5)
+        self.assertEqual(len(r.sent), 2)
+
+    def test_two_new_rewordings_in_one_round_send_once(self):
+        r = self.runner()
+        self.fr = r
+        self.sync({"fu:fu_a": "EVB 线：请在 Instabox 启动 ib-agent-2，供 EVB 继续独立综合校准",
+                   "fu:fu_b": "EVB 线：请在 Instabox 恢复 ib-agent-2，供 EVB 继续独立综合校准"}, 0)
+        self.assertEqual(len(r.sent), 1)
+        self.sync({"fu:fu_a": "EVB 线：请在 Instabox 启动 ib-agent-2，供 EVB 继续独立综合校准",
+                   "fu:fu_b": "EVB 线：请在 Instabox 恢复 ib-agent-2，供 EVB 继续独立综合校准"}, 0.5)
+        self.assertEqual(len(r.sent), 1)
+
     def test_different_human_requests_of_a_line_stay_apart(self):
         r = self.runner()
         self.fr = r
