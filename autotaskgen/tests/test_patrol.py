@@ -735,3 +735,78 @@ class AutoContinue(Base):
         fr = FakeRunner()
         self.run_patrol(fr)
         self.assertEqual(self.sends(fr), [])
+
+
+class ScreenRunner(FakeRunner):
+    """FakeRunner whose screen reads of the new worker answer from a list of tails (the last one repeats)."""
+
+    def __init__(self, screens, **kw):
+        super().__init__(**kw)
+        self.screens = list(screens)
+
+    def __call__(self, argv, input_text=None, timeout=60):
+        if "terminal" in argv and "read" in argv and "term_new-worker" in argv:
+            self.calls.append(argv)
+            tail = self.screens.pop(0) if len(self.screens) > 1 else self.screens[0]
+            if tail is None:
+                return 1, "", "read failed"
+            return 0, json.dumps({"result": {"terminal": {"tail": tail}}}), ""
+        return super().__call__(argv, input_text=input_text, timeout=timeout)
+
+
+IDLE = ["> 你是 worker…（说明末尾）", "opendesign/deepseek-v4.1-flash-eco · max"]
+BUSY = ["⚓ Thinking", "opendesign/deepseek-v4.1-flash-eco · max", "esc to interrupt"]
+
+
+class DshEnter(Base):
+    """11-08 probes: Orca pastes the spec into a dsh worker's input box without submitting, and an Enter sent right
+    after worker-start can be lost; patrol presses Enter until dsh shows it is working (at most 3 times)."""
+
+    def setUp(self):
+        super().setUp()
+        self.pause = patrol.ENTER_PAUSE
+        patrol.ENTER_PAUSE = 0
+        proj = core.load_project("t")
+        proj.setdefault("defaults", {})["ds_worker"] = {"enabled": True, "on": "wsl"}
+        core.save_project(proj)
+        self.add(plan_ev("L", "a", route={"agent": "dsh", "on": "wsl"}, node_kind="review"))   # no alternation
+        self.put_live(live())
+
+    def tearDown(self):
+        patrol.ENTER_PAUSE = self.pause
+        super().tearDown()
+
+    @staticmethod
+    def sends(fr):
+        return [c[c.index("--text") + 1] for c in fr.kinds("send") if "--text" in c]
+
+    @staticmethod
+    def enters(fr):
+        return [c for c in fr.calls if "terminal" in c and "send" in c and "--enter" in c and "--text" not in c]
+
+    def test_second_enter_when_first_is_lost(self):
+        fr = ScreenRunner([IDLE, BUSY])
+        self.run_patrol(fr)
+        starts = fr.kinds("worker-start")
+        self.assertEqual((len(starts), starts[0][starts[0].index("--agent") + 1]), (1, "dsh"))
+        enters = self.enters(fr)
+        self.assertEqual(len(enters), 2, fr.calls)
+        self.assertEqual(enters[0][enters[0].index("--environment") + 1], "wsl")
+        self.assertFalse(any("没开始干活" in t for t in self.sends(fr)))
+
+    def test_busy_after_first_enter_stops(self):
+        fr = ScreenRunner([BUSY])
+        self.run_patrol(fr)
+        self.assertEqual(len(self.enters(fr)), 1)
+
+    def test_unreadable_screen_no_blind_retries(self):
+        fr = ScreenRunner([None])
+        self.run_patrol(fr)
+        self.assertEqual(len(self.enters(fr)), 1)
+
+    def test_never_starts_tells_the_router(self):
+        fr = ScreenRunner([IDLE])
+        self.run_patrol(fr)
+        self.assertEqual(len(self.enters(fr)), patrol.ENTER_TRIES)
+        self.assertTrue(any("L/a 的 dsh worker 没开始干活" in t for t in self.sends(fr)), self.sends(fr))
+

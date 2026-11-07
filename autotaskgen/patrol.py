@@ -119,6 +119,7 @@ import pathlib
 import re
 import shlex
 import sys
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -446,6 +447,40 @@ def start_argv(spec_text: str, route: Dict[str, Any], line: Dict[str, Any], node
     if line.get("repo"):
         argv += ["--repo", line["repo"]]
     return argv
+
+
+DSH_BUSY = "esc to interrupt"     # dsh-tui's bottom line while it works
+ENTER_TRIES = 3
+ENTER_PAUSE = 5.0
+
+
+def submit_enter(runner, terminal: str, on: Optional[str], pause: Optional[float] = None,
+                 sleep=None) -> Dict[str, Any]:
+    """Submit the spec Orca pasted into a fresh dsh worker's input box. 11-08 probe: an Enter sent right after
+    worker-start can land before the TUI is ready and the spec stays unsent. So: pause, Enter, pause, read the screen;
+    dsh shows "esc to interrupt" while it works; otherwise press again, at most ENTER_TRIES times. An unreadable
+    screen stops the presses (no blind Enter into a running worker)."""
+    pause = ENTER_PAUSE if pause is None else pause
+    sleep = sleep or time.sleep
+    env = ["--environment", on] if on and on not in LOCAL_ON else []
+    presses = 0
+    for _ in range(ENTER_TRIES):
+        sleep(pause)
+        rc, out, err = runner([snap.orca_bin(), "terminal", "send"] + env + ["--terminal", terminal, "--enter", "--json"],
+                              timeout=60)
+        if rc != 0:
+            return {"ok": False, "presses": presses, "error": _short(err or out or "rc=%s" % rc, 120)}
+        presses += 1
+        sleep(pause)
+        rc, out, _err = runner([snap.orca_bin(), "terminal", "read"] + env +
+                               ["--terminal", terminal, "--screen", "--limit", "15", "--json"], timeout=30)
+        tail = snap._tail_of(out) if rc == 0 else None
+        if tail is None:
+            return {"ok": True, "presses": presses, "busy": None}
+        if any(DSH_BUSY in str(x).lower() for x in tail):
+            return {"ok": True, "presses": presses, "busy": True}
+    return {"ok": False, "presses": presses, "busy": False,
+            "error": "按了 %d 次 Enter，dsh 仍没开始干活" % presses}
 
 
 def parse_start(rc: int, out: str) -> Dict[str, Any]:
@@ -2432,6 +2467,12 @@ def execute(store: snap.Store, result: Dict[str, Any], now: _dt.datetime, runner
             notices.setdefault(a["router"], []).append(
                 "已代派 %s/%s（%s，dispatch %s）" % (lid, nid, a["route"].get("model") or a["route"].get("agent"),
                                                 st.get("dispatch")))
+            if a["route"].get("agent") == "dsh" and st.get("terminal"):
+                # 11-08 probe: worker-start pastes the spec into dsh's input box without submitting it
+                rec["enter"] = submit_enter(runner, st["terminal"], a["route"].get("on"))
+                if not rec["enter"]["ok"]:
+                    notices[a["router"]].append("%s/%s 的 dsh worker 没开始干活（%s），请看一眼它的终端 %s" % (
+                        lid, nid, rec["enter"].get("error"), st["terminal"]))
             pst = load_patrol_state(store.pid)
             if pst["rejected"].pop("%s:%s" % (lid, nid), None) is not None:
                 save_patrol_state(store.pid, pst)

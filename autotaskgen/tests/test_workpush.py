@@ -358,6 +358,22 @@ class Push(Base):
 
 
 class Cli(Base):
+    # plans here are stamped with the real clock, after the R1 cut-off, and have no spec file: the
+    # prerequisite check is tested in test_prereq, not here
+    _precheck = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls._precheck = os.environ.get("PROGRESS_PRECHECK")
+        os.environ["PROGRESS_PRECHECK"] = "0"
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._precheck is None:
+            os.environ.pop("PROGRESS_PRECHECK", None)
+        else:
+            os.environ["PROGRESS_PRECHECK"] = cls._precheck
+
     def setUp(self):
         super().setUp()
         core.save_project(project())
