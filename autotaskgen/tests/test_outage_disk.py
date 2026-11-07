@@ -175,7 +175,7 @@ class TerraNonBlocking(OBase):
                          model_call=model)
         self.assertTrue(seen["worker_start"])
         self.assertTrue(out["supervisor"]["ran"])
-        self.assertEqual(sup.TIMEOUT_S, 600)
+        self.assertEqual(sup.TIMEOUT_S, 1200)  # terra max (11-07 router rules R5)
 
     def test_backoff_after_failed_call_then_retry_and_success_clears(self):
         self.put_live(live())

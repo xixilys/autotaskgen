@@ -166,6 +166,10 @@ def build_event(cmd, a):
         ev["require_review"] = [d for d in a.require_review.split(",") if d]
     if getattr(a, "expected_minutes", None):
         ev["expected_duration_minutes"] = a.expected_minutes
+    if cmd == "dispatch" and (a.model or getattr(a, "agent", None)):
+        # R6+R7 (11-07): which worker model ran the node, for the Terra max / DS max comparison
+        ev["route"] = {k: v for k, v in (("agent", getattr(a, "agent", None)), ("model", a.model),
+                                          ("effort", a.effort), ("on", getattr(a, "on", None))) if v}
     if cmd == "plan":
         ev["node_kind"] = a.kind or core.infer_node_kind(a.node)
         if a.model or a.on:
@@ -264,6 +268,9 @@ def parser():
             s.add_argument("--blocker", required=True, choices=sorted(core.BLOCKERS))
         if cmd == "supersede":
             s.add_argument("--by", required=True)
+        if cmd == "dispatch":
+            s.add_argument("--agent", help="worker agent (codex / dsh); with --model/--effort it is recorded as the route")
+            s.add_argument("--on")
         if cmd == "plan":
             s.add_argument("--title")
             s.add_argument("--deps", default="")

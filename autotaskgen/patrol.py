@@ -272,9 +272,81 @@ def read_spec(ref: Optional[str], repo: str, runner) -> Dict[str, Any]:
     return {"text": out, "header": header if isinstance(header, dict) else {}, "branch": branch, "source": source}
 
 
+# 11-07 router rules R6 (trial): daily development defaults to Terra max. A Terra route with no effort gets max
+# (codex's own Terra default is low); an explicit effort is kept. A route with no model still is not dispatched.
+DEFAULT_EFFORT = {"gpt-6.1-terra": "max"}
+
+
+# R6+R7 (11-07, trial): development ("run") nodes planned on Terra alternate Terra max / DS max (dsh agent, model fixed
+# in the dsh profile) per line in dispatch order; a rework goes to the model not tried yet, then to Sol high.
+# DS joins only when project.defaults.ds_worker = {"enabled": true, "on": "wsl"} (set once a probe proved it runs).
+TERRA = "gpt-6.1-terra"
+SOL_REWORK = {"agent": "codex", "model": "gpt-6.1-sol", "effort": "high"}
+REWORK_RE = re.compile(r"(?:[-_](?:repair|resume|recheck|retry|fix|rework|redo|followup|r\d+))+(?:[-_]?\d+)*$")
+
+
+def _family(route: Optional[Dict[str, Any]]) -> Optional[str]:
+    r = route or {}
+    if r.get("agent") == "dsh":
+        return "ds"
+    m = str(r.get("model") or "").split("/")[-1]
+    return "terra" if m == TERRA else ("sol" if m.startswith("gpt-6.1-sol") else None)
+
+
+def _attempt_routes(events: List[Dict[str, Any]], nodes: Dict[str, Any], lid: str, nid: str) -> List[str]:
+    """Families of earlier real attempts at this node or its stem (a dispatch later delivered or reviewed)."""
+    stem = REWORK_RE.sub("", nid)
+    out: List[Tuple[str, str]] = []
+    for i, e in enumerate(events):
+        if e.get("line") != lid or e.get("kind") not in ("node_dispatch", "auto_dispatch") or e.get("phase") == "started":
+            continue
+        x = e.get("node") or ""
+        if REWORK_RE.sub("", x) != stem:
+            continue
+        if not any(f.get("node") == x and f.get("line") == lid and f.get("kind") in ("node_deliver", "node_review")
+                   for f in events[i + 1:]):
+            continue
+        fam = _family(e.get("route")) or _family((nodes.get(x) or {}).get("route"))
+        if fam:
+            out.append((e.get("at") or "", fam))
+    return [f for _, f in sorted(out)]
+
+
+def dev_route(project: Dict[str, Any], events: List[Dict[str, Any]], nodes: Dict[str, Any], lid: str, nid: str,
+              n: Dict[str, Any], route: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[str]]:
+    """-> (route, why). Only development nodes the router planned on Terra (or on DS) are re-routed."""
+    if (n.get("kind") or core.infer_node_kind(nid)) != "run" or _family(route) not in ("terra", "ds"):
+        return route, None
+    ds_conf = (project.get("defaults") or {}).get("ds_worker") or {}
+    ds_on = bool(ds_conf.get("enabled"))
+    on = route.get("on") or ds_conf.get("on") or "wsl"
+    terra = {"agent": "codex", "model": route["model"] if _family(route) == "terra" else TERRA, "effort": "max", "on": on}
+    ds = {"agent": "dsh", "on": ds_conf.get("on") or on}
+    tried = _attempt_routes(events, nodes, lid, nid)
+    if tried:
+        for fam, r in (("terra", terra), ("ds", ds)):
+            if fam not in tried and (fam != "ds" or ds_on):
+                return r, "rework_other_model"
+        return dict(SOL_REWORK, on=on), "rework_sol_high"
+    if not ds_on:
+        return terra, "terra_max_ds_off"
+    last = None
+    for e in reversed(events):
+        if e.get("line") == lid and e.get("kind") in ("node_dispatch", "auto_dispatch") and e.get("phase") != "started":
+            f = _family(e.get("route")) or _family((nodes.get(e.get("node")) or {}).get("route"))
+            if f in ("terra", "ds") and (nodes.get(e.get("node")) or {}).get("kind", "run") == "run":
+                last = f
+                break
+    return (ds, "alternate_ds") if last == "terra" else (terra, "alternate_terra")
+
+
 def resolve_route(node: Dict[str, Any], header: Dict[str, Any]) -> Dict[str, Any]:
     route = dict(header.get("route") or {}) if isinstance(header.get("route"), dict) else {}
     route.update({k: v for k, v in (node.get("route") or {}).items() if v})
+    if route.get("model") and not route.get("effort"):
+        eff = DEFAULT_EFFORT.get(str(route["model"]).split("/")[-1])
+        if eff:
+            route["effort"] = eff
     return route
 
 
@@ -1678,6 +1750,7 @@ def plan(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[D
                 observe("spec:%s:%s" % (lid, nid), lid, nid, spec["error"], code="spec_unreadable")
                 continue
             route = resolve_route(n, spec["header"])
+            route, route_why = dev_route(project, events, nodes, lid, nid, n, route)
             miss = route_missing(route)
             repo_id = line_repo(project, line)  # None: worker-start without --repo (fine for local worktrees)
             if miss:
@@ -1706,6 +1779,8 @@ def plan(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[D
             dispatched_now.add(nid)
             if n.get("segment_mode") == "serial" and sk:
                 serial_busy.add(sk)
+            if route_why:
+                route = dict(route, why=route_why)
             actions.append({"type": "auto_dispatch", "line": lid, "node": nid, "route": route, "base": base,
                             "name": name, "spec_ref": n["spec"], "spec_bytes": len(text), "argv": argv,
                             "argv_hash": argv_hash(argv),

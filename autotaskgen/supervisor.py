@@ -30,14 +30,18 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import progress_core as core
+import router_load
 import snapshot as snap
 
 PULSE_S = 30 * 60
 SEND_GAP_S = 3600
-TIMEOUT_S = 10 * 60
+TIMEOUT_S = 20 * 60   # terra max (11-07 router rules R5): high took 1.5-3 min a round; max is several times that. Deterministic work runs before the call, so a slow call only delays the next patrol round
 BACKOFF_S = 60 * 60   # after a failed (rc != 0 / timeout) call, skip the model this long (11-06: 900 s timeouts stretched patrol rounds to 65 min)
 MAP_MAX = 60000
 MODEL = "gpt-6.1-terra"
+EFFORT = "max"        # 11-07 router rules R5 (was high)
+SPLIT_GAP_S = 12 * 3600   # split-router advice: at most once per line per 12 h (router and lead)
+LOAD_WINDOW_H = 24.0
 SUP_HANDLE = "supervisor@mac"
 STATUSES = ("ok", "attention", "problem")
 KINDS = ("stalled", "looping", "hallucinating", "drifting", "idle_parallelism", "no_progress", "other",
@@ -118,7 +122,7 @@ PROMPT = """你是 dse 项目的巡检员。你不干活，只做三件事：判
 ----（地图结束）----
 
 一、怎么查
-1. 先读地图第 1–4 段（最终目标与关键路径、卡点、硬指标、待回查建议），再看第 5 段各线背景和第 7 段各线节点。
+1. 先读地图第 1–4 段（最终目标与关键路径、卡点、硬指标、router 负载、待回查建议），再看第 5 段各线背景和第 7 段各线节点。
 2. 地图给不出答案时，用 progress-inspect 抽查：
    progress-inspect screen <term_… 或 ctx_…> | events --line X [--node Y] [--since ISO] | node --line X --node Y |
    file <绝对路径> | git-log <worktree> [-n N] | tasks --run R
@@ -137,6 +141,7 @@ A. 关键路径：前沿里程碑各卡在哪。把每个卡点归为一类，�
    图上没连、实际相连的跨线依赖（例如某个前端里程碑实际要用后端某个节点的产物），记 graph_gap，写进 goal_drafts。
 B. 回查：第 4 段每一条都要给 verdict（done / not_done / obsolete / cannot_tell）并附证据。看 done_when 写的事实有没有出现，不要因为对方回了消息就判 done。
 C. 硬指标：第 3 段每个 ⚠ 项判 real（真问题）或 explained（有正当原因；写清原因和证据），写进 metric_findings。real 的必须出现在该线 issues 里，并配一条 action。
+E. router 负载：第 3b 段的数都是脚本从事件和 router 会话记录算的，带分母和时间窗，直接引用，不要自己重算。看 router 是不是瓶颈：忙碌比例高、审查等待长、就绪未派、交付超 30 分没审、平均同时在跑的 worker 少。标了"⚠拆 router 判据命中"的线，给该线 router 写一条 action：建议拆出子 router，列出地图给的可以拆开的独立子目标（写节点或里程碑名），done_when 写"该线出现新的子 router 或协调人回复不拆的理由"。负责人那边由脚本另发。
 D. 偏离：各线最近的工作有没有在推进它挂的里程碑；第 1 段里"未挂里程碑"的活跃节点，判断它在为哪个里程碑干活，或者判为 drifting。
 
 三、判状态
@@ -561,8 +566,23 @@ def build_map(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optio
     docs = {ln["id"]: line_docs(project, ln, runner, last_state) for ln in project.get("lines") or []}
     metric_rows, flagged = hard_metrics(project, state, events, live, now, docs,
                                         (prev_report or {}).get("missing_metric_verdicts"))
+    try:
+        loads = router_load.project_load(project, state, events, live, now, LOAD_WINDOW_H,
+                                         planned_parallel=patrol.max_parallel)
+        load_rows = router_load.render_rows(loads)
+        for lid, m in loads.items():
+            if m["split"]["hit"]:
+                gs = router_load.independent_groups(((state.get("lines") or {}).get(lid) or {}).get("nodes") or {})
+                load_rows.append("  %s 可以拆开的独立子目标（互不依赖的未完成节点组）：%s" % (lid, "；".join(
+                    "%d 个节点 %s%s" % (g["n"], "、".join(g["nodes"][:3]),
+                                     ("（里程碑 %s）" % ",".join(g["milestones"])) if g["milestones"] else "")
+                    for g in gs) or "（只有一组，没有可拆的）"))
+                m["groups"] = gs
+    except Exception as exc:  # noqa: BLE001 - the numbers are an aid; the round goes on without them
+        loads, load_rows = {}, ["（router 负载算不出来：%s）" % str(exc)[:120]]
     if meta is not None:
         meta["flagged"] = flagged
+        meta["router_load"] = loads
     fu_rows = render_followups(last_state.get("followups") or {}, now)
 
     def render(wtail: int, rtail: int, all_nodes: bool, state_chars: int, brief: bool, n_ev: int) -> str:
@@ -570,6 +590,7 @@ def build_map(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optio
         o += ["", "## 1 最终目标与关键路径"] + milestone_frontier(project, state)
         o += ["", "## 2 卡点"] + blocker_table(project, state, now)
         o += ["", "## 3 硬指标（⚠ = 超标）"] + metric_rows
+        o += ["", "## 3b router 负载（脚本算出；最近 %g 小时）" % LOAD_WINDOW_H] + load_rows
         o += ["", "## 4 待回查建议"] + fu_rows
         o += ["", "## 5 各线背景（BRIEF / STATE 摘要；全文用 progress-inspect file <绝对路径>）"]
         for ln in project.get("lines") or []:
@@ -665,7 +686,7 @@ def build_map(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optio
 # ---------------------------------------------------------------- model call + audit
 
 def default_cmd(schema_path: str, out_path: str) -> List[str]:
-    return ["codex", "exec", "-m", MODEL, "-c", 'model_reasoning_effort="high"',
+    return ["codex", "exec", "-m", MODEL, "-c", 'model_reasoning_effort="%s"' % EFFORT,
             "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "--ephemeral", "--json",
             "--output-schema", schema_path, "-o", out_path, "-"]
 
@@ -1161,6 +1182,64 @@ def deliver(project: Dict[str, Any], report: Dict[str, Any], live: Optional[Dict
 
 # ---------------------------------------------------------------- entry
 
+def lead_cmd() -> List[str]:
+    """How to reach the project lead's inbox: PROGRESS_LEAD_CMD, else `lead` on PATH, else ~/.local/bin/lead."""
+    import shutil
+    c = os.environ.get("PROGRESS_LEAD_CMD")
+    if c:
+        return shlex.split(c)
+    return [shutil.which("lead") or os.path.expanduser("~/.local/bin/lead")]
+
+
+def split_notify(project: Dict[str, Any], loads: Dict[str, Dict[str, Any]], report: Dict[str, Any],
+                 live: Optional[Dict[str, Any]], st: Dict[str, Any], now: _dt.datetime, runner,
+                 apply: bool) -> List[Dict[str, Any]]:
+    """Split-router criterion hit (decided by router_load, R5): one note to the line's router (unless terra's own
+    action to that router already says split) and one to the project lead's inbox; each at most once per 12 h."""
+    import patrol
+    sent = st.setdefault("split_sent", {})
+    rows: List[Dict[str, Any]] = []
+    for lid, m in loads.items():
+        if not (m.get("split") or {}).get("hit"):
+            continue
+        last = sent.get(lid)
+        if last and _ev_t(last) and (now - _ev_t(last)).total_seconds() < SPLIT_GAP_S:
+            rows.append({"line": lid, "skipped": "sent_recently", "last": last})
+            continue
+        gs = m.get("groups") or []
+        why = "；".join(m["split"]["why"])
+        sub = "；".join("%s%s" % ("、".join(g["nodes"][:3]), ("（%s）" % ",".join(g["milestones"])) if g["milestones"] else "")
+                       for g in gs) or "（脚本没找到互不依赖的节点组，请按里程碑拆）"
+        text = ("【巡检员→%s 线 router｜拆 router 建议】%s。建议拆出子 router 分担派单，可以拆开的独立子目标：%s。"
+                "拆不拆由你和协调人定；不拆请在本线状态记录写一句理由。" % (lid, why, sub))
+        row: Dict[str, Any] = {"line": lid, "why": m["split"]["why"], "groups": gs}
+        terra_said = any(a.get("to") == "router" and "拆" in str(a.get("text") or "")
+                         for l in report.get("lines") or [] if l.get("line") == lid for a in l.get("actions") or [])
+        h = ((((live or {}).get("routers") or {}).get(lid) or {}).get("handle")) or next(
+            (ln.get("router") for ln in project.get("lines") or [] if ln["id"] == lid), None)
+        if not apply:
+            row["planned"] = True
+            rows.append(row)
+            continue
+        if terra_said:
+            row["router"] = "via_terra_action"
+        elif h:
+            ok, err = patrol._send(runner, h, text)
+            row["router"] = "sent" if ok else "failed: " + err
+        lt = "【巡检员→负责人｜%s 线 router 是瓶颈】%s。可拆的独立子目标：%s。已建议该线 router 拆子 router。" % (lid, why, sub)
+        try:
+            p = subprocess.run(lead_cmd() + ["--project", str(project.get("id")), "inbox", "add", "--from", "supervisor",
+                                             "--key", "split:%s:%s" % (lid, snap.iso(now)[:13]), "--text", lt],
+                               capture_output=True, text=True, timeout=30)
+            row["lead"] = (p.stdout.strip() or p.stderr.strip())[:80] if p.returncode == 0 else "failed: " + (p.stderr or p.stdout)[:120]
+        except (OSError, subprocess.SubprocessError) as exc:
+            row["lead"] = "failed: %s" % exc
+        if row.get("router") in ("sent", "via_terra_action") or not str(row.get("lead", "")).startswith("failed"):
+            sent[lid] = snap.iso(now)
+        rows.append(row)
+    return rows
+
+
 def pulse(pid: str, project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[Dict[str, Any]],
           now: _dt.datetime, runner, store: snap.Store, apply: bool = False, force: bool = False,
           round_actions: Optional[List[Dict[str, Any]]] = None,
@@ -1230,11 +1309,16 @@ def pulse(pid: str, project: Dict[str, Any], events: List[Dict[str, Any]], live:
         return info
     commands = stream_commands(stream)
     viol = audit(commands)
-    report = {"schema": SCHEMA_ID, "generated_at": snap.iso(now), "model": MODEL, "duration_s": dur,
+    report = {"schema": SCHEMA_ID, "generated_at": snap.iso(now), "model": MODEL, "effort": EFFORT, "duration_s": dur,
               "inspect_calls": inspect_calls, "commands": len(commands), "map_chars": len(map_text), **clean}
     if viol:
         report["policy_violation"] = viol
     report["delivery"] = deliver(project, report, live, st, now, runner, apply, store, bool(viol))
+    report["router_load"] = {lid: {k: m.get(k) for k in ("window", "router_busy", "review_wait_min", "worker_run_min",
+                                                         "avg_concurrent_workers", "split")}
+                             for lid, m in (meta.get("router_load") or {}).items()}
+    report["router_split"] = split_notify(project, meta.get("router_load") or {}, report, live, st, now, runner,
+                                          apply and not viol)
     report["followup_ledger"] = {"open": sum(1 for e in st["followups"].values() if _is_open(e)),
                                  "pending_this_round": [e["id"] for e in pending]}
     try:

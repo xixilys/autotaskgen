@@ -182,6 +182,13 @@ class Inbox(Base):
         self.assertEqual((rows[0]["acked"], rows[0]["handled"]), ("2026-01-10T08:00:00Z", "回了"))
         self.assertEqual([m["id"] for m in lead.unread(rows)], ["I2"])
 
+    def test_script_note_lands_as_unread_once_per_key(self):
+        c = self.ctx()
+        self.assertEqual(lead.inbox_add(c, "EVB 线 router 是瓶颈", "supervisor", "split:EVB:2026-01-10T08"), "I1")
+        self.assertIsNone(lead.inbox_add(c, "again", "supervisor", "split:EVB:2026-01-10T08"))
+        rows = lead.read_jsonl(c.inbox)
+        self.assertEqual([(r["id"], r["dir"], r["from"]) for r in lead.unread(rows)], [("I1", "in", "supervisor")])
+
     def test_qq_send_logs_outbound_and_never_leaks_config(self):
         c = self.ctx()
         ok, why = lead.qq_log(c, "hello")

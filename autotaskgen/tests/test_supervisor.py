@@ -227,10 +227,10 @@ class RealRunModel(Base):
         argv = sup.default_cmd("/s.json", "/o.txt")
         self.assertEqual(argv[:3], ["codex", "exec", "-m"])
         self.assertIn("gpt-6.1-terra", argv)
-        self.assertIn('model_reasoning_effort="high"', argv)
+        self.assertIn('model_reasoning_effort="max"', argv)  # 11-07 router rules R5
         self.assertIn("--output-schema", argv)
         self.assertIn("--json", argv)
-        self.assertEqual(sup.TIMEOUT_S, 600)
+        self.assertEqual(sup.TIMEOUT_S, 1200)  # terra max (11-07 router rules R5)
 
 
 def _ms_project(state_file=None):

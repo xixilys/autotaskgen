@@ -517,7 +517,28 @@ def inbox_ack(ctx, mid, note=""):
     return hit
 
 
+def inbox_add(ctx, text, sender, key=""):
+    """An inbound note from a framework script (not the human), e.g. the supervisor's split-router advice.
+    Same row shape as lead-qq's; `key` dedupes (stored as message_id). -> id, or None when the key is already in."""
+    rows = read_jsonl(ctx.inbox)
+    if key and any(r.get("message_id") == key for r in rows):
+        return None
+    row = {"id": next_id(rows, "I"), "dir": "in", "at": iso(ctx.clock()), "text": text, "from": sender}
+    if key:
+        row["message_id"] = key
+    os.makedirs(os.path.dirname(ctx.inbox), exist_ok=True)
+    with open(ctx.inbox, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return row["id"]
+
+
 def cmd_inbox(ctx, a):
+    if a.op == "add":
+        if not a.text:
+            sys.exit("inbox add needs --text")
+        rid = inbox_add(ctx, a.text, a.sender, a.key)
+        print(rid or "duplicate")
+        return
     if a.op == "ack":
         if not inbox_ack(ctx, a.id, a.note):
             sys.exit("no such id %s" % a.id)
@@ -686,9 +707,12 @@ def build_parser():
     lg.add_argument("--filter", choices=["all", "open", "due"], default="open")
     lg.set_defaults(fn=cmd_ledger)
     ib = sub.add_parser("inbox")
-    ib.add_argument("op", choices=["list", "ack"])
+    ib.add_argument("op", choices=["list", "ack", "add"])
     ib.add_argument("id", nargs="?")
     ib.add_argument("--note", default="")
+    ib.add_argument("--text", default="", help="add: the note")
+    ib.add_argument("--from", dest="sender", default="supervisor", help="add: who sends it (a script, not the human)")
+    ib.add_argument("--key", default="", help="add: dedupe key; a second add with the same key is dropped")
     ib.add_argument("--unread", action="store_true")
     ib.add_argument("-n", type=int, default=30)
     ib.set_defaults(fn=cmd_inbox)
