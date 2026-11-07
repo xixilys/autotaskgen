@@ -52,7 +52,8 @@ HUMAN_RE = re.compile(r"人类|授权|端点|首回复|材料|endpoint|批准", 
 LATER_RE = re.compile(r"(之后|以后|交付后|完成后|固定后|通过后|后续|后再|再转\s*human|再请求|才需要|才转|才请求)")
 # a dep-labelled wait whose text also names a human step is a wait on both, not a mislabel (11-07: FE waited on the
 # B13a handoff and on the human budget approval; terra flagged it mislabeled for being dep, then for being counted human)
-DEP_RE = re.compile(r"交付|交接|未收|未交|待交|待[^；;，,。\s]{1,12}?交|到件|产物|产出|依赖|固定版本|等(?:待)?[A-Z]{2,}")
+# "等EVB…" names a line, "等F5…"/"等B13b…" a milestone or node: both are handoffs, not the human (11-07 SR 19.9h)
+DEP_RE = re.compile(r"交付|交接|未收|未交|待交|待[^；;，,。\s]{1,12}?交|到件|产物|产出|依赖|固定版本|等(?:待)?[A-Z][A-Z0-9]+")
 # a clause saying the human part already arrived is not a wait on the human (11-07: FE "仅等EVB经核二B13a固定版本/
 # 端点/公开合同；正式9bc授权已到" was inferred as waiting on the human after the approval had landed)
 ARRIVED_RE = re.compile(r"已到|已批|已收到|已获|已给|已落实|已核|无需|不需|不限|不锁|无[^；;，,。]{0,4}(?:额度|预算|上限)")

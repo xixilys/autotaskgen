@@ -353,6 +353,17 @@ class MapSections(unittest.TestCase):
         evs[-1] = dict(evs[-1], summary="授权已到；仍等人类给真实端点")       # the live clause still names the human
         self.assertIn("推断：等人", "\n".join(sup.blocker_table(*self.fold(evs), NOW)))
 
+    def test_wait_on_named_milestones_is_a_dependency_not_the_human(self):
+        evs = self.evs + [{"kind": "node_block", "line": "Q", "node": "w", "blocker": "dep", "at": at(300),
+                           "actor": {"role": "router", "handle": R},
+                           "summary": "A等F5实际PASS、B13a具名能力及独立F6批准；B等B13b固定pin/端点/目录及F6批准；两段冻结输入齐才手派，不自动调用"}]
+        proj, st = self.fold(evs)
+        txt = "\n".join(sup.blocker_table(proj, st, NOW))
+        self.assertNotIn("推断：等人", txt)
+        self.assertNotIn("可能标错", txt)
+        rows, flagged = sup.hard_metrics(proj, st, evs, {"metrics": {}}, NOW)
+        self.assertNotIn("Q:等人", flagged)
+
     def test_blocker_human_not_mislabeled(self):
         evs = self.evs + [{"kind": "node_block", "line": "Q", "node": "w", "blocker": "human", "at": at(300),
                            "actor": {"role": "router", "handle": R}, "summary": "等授权"}]
