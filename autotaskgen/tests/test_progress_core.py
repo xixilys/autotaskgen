@@ -139,76 +139,77 @@ class Validation(Base):
         self.assertEqual(len(core.read_events("t")), 1)
 
 
-class EarlyDeliver(Base):
-    T0 = "2026-11-06T10:00:00Z"
+class DeliverOutcomes(Base):
+    """R2 (11-07): worker/router deliver only PASS (optionally result negative) or BLOCKED with blocker + blocked_by."""
 
-    def setup_node(self, minutes=90, role="router", node="a"):
-        self.add(ev("node_plan", "router", R, line="L", node=node, expected_duration_minutes=minutes,
-                    at="2026-11-06T09:59:00Z"))
-        self.add(ev(role and "node_dispatch", "router", R, line="L", node=node, refs={"terminal": W},
-                    at=self.T0))
+    def setup_node(self):
+        self.add(ev("node_plan", "router", R, line="L", node="a"))
+        self.add(ev("node_dispatch", "router", R, line="L", node="a", refs={"terminal": W}))
 
-    def deliver(self, minutes_after, outcome="PARTIAL", role="worker", handle=W, **kw):
-        t = {7: "2026-11-06T10:07:00Z", 30: "2026-11-06T10:30:00Z", 31: "2026-11-06T10:31:00Z"}[minutes_after]
-        return ev("node_deliver", role, handle, line="L", node="a", outcome=outcome, at=t, **kw)
+    def deliver(self, outcome, role="worker", handle=W, **kw):
+        return ev("node_deliver", role, handle, line="L", node="a", outcome=outcome, **kw)
 
-    def test_early_partial_and_fail_rejected(self):
+    def last(self):
+        return core.read_events("t")[-1]
+
+    def test_worker_partial_fail_unknown_rejected(self):
         self.setup_node()
-        self.rejects(self.deliver(7), "early_deliver")
-        self.rejects(self.deliver(7, "FAIL"), "early_deliver")
+        for oc in ("PARTIAL", "FAIL", "UNKNOWN"):
+            self.rejects(self.deliver(oc), "deliver_outcome")
 
-    def test_blocked_by_accepted_and_stored(self):
+    def test_router_partial_rejected(self):
         self.setup_node()
-        self.add(self.deliver(7, blocked_by="缺上游 b 的产物"))
-        self.assertEqual(core.read_events("t")[-1]["blocked_by"], "缺上游 b 的产物")
-        self.rejects(self.deliver(7, blocked_by="  "), "early_deliver")
+        self.rejects(self.deliver("PARTIAL", role="router", handle=R), "deliver_outcome")
 
-    def test_pass_early_accepted(self):
+    def test_import_partial_accepted(self):
         self.setup_node()
-        self.add(self.deliver(7, "PASS"))
+        self.add(self.deliver("PARTIAL", role="import", handle="import"))
 
-    def test_partial_after_third_accepted(self):
+    def test_pass_accepted(self):
         self.setup_node()
-        self.add(self.deliver(30))
+        self.add(self.deliver("PASS"))
 
-    def test_router_role_never_gated(self):
+    def test_pass_negative_result_folded(self):
         self.setup_node()
-        self.add(self.deliver(7, role="router", handle=R))
+        self.add(self.deliver("PASS", result="negative"))
+        self.assertEqual(self.last()["result"], "negative")
+        self.assertEqual(self.state()["lines"]["L"]["nodes"]["a"]["result"], "negative")
 
-    def test_no_budget_or_no_dispatch_accepted(self):
-        self.setup_node(minutes=None)
-        self.add(self.deliver(7))
-        self.add(ev("node_plan", "router", R, line="L", node="b", expected_duration_minutes=90))
-        self.add(ev("node_deliver", "router", R, line="L", node="b", outcome="PARTIAL"))
-        self.add(ev("node_plan", "router", R, line="L", node="c", expected_duration_minutes=90))
-        self.add(ev("node_deliver", "worker", W, line="L", node="c", outcome="PARTIAL",
-                    actor={"role": "worker", "handle": W, "workspace": "x"}) if False else
-                 ev("node_deliver", "router", R, line="L", node="c", outcome="PARTIAL"))
-
-    def test_propose_node_budget_honoured(self):
-        prop = {"line": "L", "parent": None, "summary": "拆分", "evidence": ["docs/R.md"],
-                "segments": [{"id": "s", "mode": "serial", "nodes": [{
-                    "id": "a", "title": "a", "kind": "run", "deps": [], "budget": {"minutes": 90},
-                    "acceptance": ["ok"], "write_scope": ["src/a"], "spec": "br@docs/a.md",
-                    "route": {"model": "m", "on": "wsl"}}]}]}
-        p = project()
-        p["lines"][0].update({"write_scope": ["src"], "budget": {"minutes": 900, "nodes": 20}})
-        core.save_project(p)
-        self.add(ev("graph_propose", "router", R, line="L", proposal=prop, at="2026-11-06T09:00:00Z"))
-        self.add(ev("node_dispatch", "router", R, line="L", node="a", refs={"terminal": W}, at=self.T0))
-        self.rejects(self.deliver(7), "early_deliver")
-        self.add(self.deliver(30))
-
-    def test_cli_blocked_by_flag(self):
+    def test_result_negative_on_blocked_rejected(self):
         self.setup_node()
-        env = dict(os.environ, ORCA_TERMINAL_HANDLE=W, PROGRESS_PROJECT="t", PROGRESS_PUSH="off")
+        self.rejects(self.deliver("BLOCKED", blocker="budget", blocked_by="剩 3 项", result="negative"), "bad_result")
+
+    def test_blocked_needs_blocker_and_blocked_by(self):
+        self.setup_node()
+        self.rejects(self.deliver("BLOCKED", blocked_by="缺上游 b 的产物"), "deliver_blocker")
+        self.rejects(self.deliver("BLOCKED", blocker="dep"), "deliver_blocker")
+        self.rejects(self.deliver("BLOCKED", blocker="dep", blocked_by="  "), "deliver_blocker")
+        self.rejects(self.deliver("BLOCKED", blocker="bogus", blocked_by="x"), "deliver_blocker")
+
+    def test_blocked_budget_folds_to_blocked(self):
+        self.setup_node()
+        self.add(self.deliver("BLOCKED", blocker="budget", blocked_by="剩 3 项"))
+        self.assertEqual(self.last()["blocked_by"], "剩 3 项")
+        n = self.state()["lines"]["L"]["nodes"]["a"]
+        self.assertEqual((n["status"], n["blocker"], n["blocked_by"]), ("blocked", "budget", "剩 3 项"))
+
+    def test_review_partial_accepted_blocked_rejected(self):
+        self.setup_node()
+        self.add(self.deliver("PASS"))
+        self.add(ev("node_review", "router", R, line="L", node="a", outcome="PARTIAL"))
+        self.rejects(ev("node_review", "router", R, line="L", node="a", outcome="BLOCKED"), "bad_outcome")
+
+    def test_cli_blocked_and_result_flags(self):
         import progress
-        a = progress.parser().parse_args(["deliver", "--line", "L", "--node", "a", "--outcome", "PARTIAL",
-                                          "--summary", "s", "--blocked-by", "等裁决"])
-        self.assertEqual(progress.build_event("deliver", a)["blocked_by"], "等裁决")
+        a = progress.parser().parse_args(["deliver", "--line", "L", "--node", "a", "--outcome", "BLOCKED",
+                                          "--blocker", "budget", "--blocked-by", "剩 3 项", "--summary", "s"])
+        e = progress.build_event("deliver", a)
+        self.assertEqual((e["blocker"], e["blocked_by"]), ("budget", "剩 3 项"))
         a = progress.parser().parse_args(["deliver", "--line", "L", "--node", "a", "--outcome", "PASS",
-                                          "--summary", "s"])
-        self.assertNotIn("blocked_by", progress.build_event("deliver", a))
+                                          "--result", "negative", "--summary", "s"])
+        e = progress.build_event("deliver", a)
+        self.assertEqual(e["result"], "negative")
+        self.assertNotIn("blocked_by", e)
 
 
 class Fold(Base):
@@ -219,7 +220,7 @@ class Fold(Base):
         n = self.state()["lines"]["L"]["nodes"]
         self.assertEqual((n["a"]["status"], n["b"]["status"], n["c"]["status"]), ("ready", "planned", "planned"))
         self.add(ev("node_dispatch", "router", R, line="L", node="a", refs={"terminal": W}))
-        self.add(ev("node_deliver", "worker", W, line="L", node="a", outcome="PARTIAL"))
+        self.add(ev("node_deliver", "import", "import", line="L", node="a", outcome="PARTIAL"))
         n = self.state()["lines"]["L"]["nodes"]
         self.assertEqual((n["b"]["status"], n["c"]["status"]), ("ready", "planned"))
         self.add(ev("node_review", "router", R, line="L", node="a", outcome="PASS"))
@@ -229,9 +230,9 @@ class Fold(Base):
         self.add(ev("node_plan", "router", R, line="L", node="a"))
         self.add(ev("node_plan", "router", R, line="L", node="b", deps=["a"]))
         self.add(ev("node_dispatch", "router", R, line="L", node="a", refs={"terminal": W}))
-        self.add(ev("node_deliver", "worker", W, line="L", node="a", outcome="UNKNOWN"))
+        self.add(ev("node_deliver", "import", "import", line="L", node="a", outcome="UNKNOWN"))
         self.assertEqual(self.state()["lines"]["L"]["nodes"]["b"]["status"], "planned")
-        self.add(ev("node_deliver", "worker", W, line="L", node="a", outcome="FAIL"))
+        self.add(ev("node_deliver", "import", "import", line="L", node="a", outcome="FAIL"))
         self.assertEqual(self.state()["lines"]["L"]["nodes"]["a"]["status"], "failed")
 
     def test_supersede_hands_dependency_over(self):

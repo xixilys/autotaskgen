@@ -5,7 +5,12 @@ Examples
   progress plan    --line EVB --node dev_x --title "…" --deps a,b --spec you/evb-dev@docs/…/specs/dev_x.md \
                    --model gpt-6.1-sol --effort high --on wsl --milestone M1 --summary "…"
   progress dispatch --line EVB --node dev_x --dispatch ctx_… --worktree <id> --terminal term_… --summary "…"
-  progress deliver --line EVB --node dev_x --outcome PARTIAL --report docs/…/REPORT.md --head <sha> --summary "…"
+  progress deliver --line EVB --node dev_x --outcome PASS [--result negative] --report docs/…/REPORT.md --head <sha> --summary "…"
+  progress deliver --line EVB --node dev_x --outcome BLOCKED --blocker dep|env|human|budget|design --blocked-by "还差什么" …
+                   (R2 11-07: worker/router deliveries are PASS or BLOCKED only; PARTIAL/FAIL/UNKNOWN are refused)
+  progress precheck --line EVB --node dev_x [--dry-run]  R1: check the spec's 前置条件 before worker-start; a missing
+                   input is recorded as node_block blocker=dep (patrol dispatches once it exists). `progress dispatch`
+                   runs the same check and refuses a dispatch whose inputs are missing.
   progress review  --line EVB --node dev_x --outcome PASS --summary "…"
   deliver / review first push the work branch (cwd, or the worktree holding --head) to origin after the
   fail-closed exclusions (workpush.py); the event gets pushed {branch, sha} | push_failed | push_skipped.
@@ -38,6 +43,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import progress_core as core  # noqa: E402
 import graph  # noqa: E402
+import prereq  # noqa: E402
 import workpush  # noqa: E402
 
 DEFAULT_ROLE = {
@@ -156,7 +162,7 @@ def build_event(cmd, a):
     ev = {"kind": KIND[cmd], "actor": {k: v for k, v in actor.items() if v},
           "summary": a.summary}
     for key in ("line", "node", "milestone", "outcome", "blocker", "by", "title", "spec",
-                "source"):
+                "source", "result"):
         v = getattr(a, key, None)
         if v:
             ev[key] = v
@@ -234,6 +240,97 @@ def check_proposal(pid, ev):
                          for sg in res["normalized"]["segments"]]}
 
 
+def _run(argv, timeout=30):
+    try:
+        r = subprocess.run(argv, text=True, capture_output=True, timeout=timeout)
+        return r.returncode, r.stdout, r.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out"
+    except OSError as exc:
+        return 127, "", str(exc)
+
+
+def _line_states(pid, lines):
+    """{line: folded line state} for the given lines, from the local store or the remote one (missing on failure)."""
+    out = {}
+    if local_store(pid):
+        st = core.fold(core.load_project(pid), core.read_events(pid))
+        return {l: st["lines"][l] for l in lines if l in st.get("lines", {})}
+    host = os.environ.get("PROGRESS_REMOTE", "wsl")
+    for l in lines:
+        rc, text, _err = _run(["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", host,
+                               "python3 %s --project %s state --line %s" % (REMOTE_CLI, shlex.quote(pid), shlex.quote(l))],
+                              timeout=60)
+        try:
+            doc = json.loads(text) if rc == 0 else None
+        except ValueError:
+            doc = None
+        if isinstance(doc, dict) and "nodes" in doc:
+            out[l] = doc
+    return out
+
+
+def _spec_text(ref, repo, remote):
+    """'branch@path' -> text from the local repo, else the worker host's repo; None when unreadable."""
+    if not ref or "@" not in ref:
+        return None
+    branch, path = ref.split("@", 1)
+    if repo:
+        rc, out, _ = _run(["git", "-C", repo, "show", "%s:%s" % (branch, path)])
+        if rc == 0 and out.strip():
+            return out
+    if remote:
+        rc, out, _ = _run(["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", remote["host"],
+                           "git -C %s show %s" % (shlex.quote(remote["repo"]), shlex.quote("%s:%s" % (branch, path)))])
+        if rc == 0 and out.strip():
+            return out
+    return None
+
+
+def run_precheck(pid, line, node):
+    """R1. -> {"applies": bool, "ok": bool, "res": {...}, "summary": str}. Only run/check nodes are checked; nodes
+    planned before prereq.SINCE without the section are let through (their specs predate the rule)."""
+    states = _line_states(pid, [line])
+    ls = states.get(line)
+    if ls is None:
+        return {"applies": True, "ok": None, "summary": "读不到主线 %s 的状态，前置条件没核对" % line}
+    n = (ls.get("nodes") or {}).get(node)
+    if not n:
+        return {"applies": False, "ok": True, "summary": "节点还没计划"}
+    if n.get("kind") not in prereq.CHECKED_KINDS:
+        return {"applies": False, "ok": True, "summary": "%s 节点不查前置条件" % n.get("kind")}
+    old = (n.get("planned_at") or "") < prereq.SINCE
+    rc, top, _ = _run(["git", "rev-parse", "--show-toplevel"])
+    repo = top.strip() if rc == 0 and top.strip() else os.environ.get("PROGRESS_REPO")
+    remote = None
+    if os.environ.get("PROGRESS_REMOTE_REPO"):
+        remote = {"host": os.environ.get("PROGRESS_REMOTE", "wsl"), "repo": os.environ["PROGRESS_REMOTE_REPO"]}
+    text = _spec_text(n.get("spec"), repo, remote)
+    if text is None:
+        if old:
+            return {"applies": False, "ok": True, "summary": "旧节点没有可读的说明，不查"}
+        res = {"format": ["节点没有可读的说明文件（spec %s）" % (n.get("spec") or "未登记")], "missing": [], "unknown": []}
+        return {"applies": True, "ok": False, "res": res, "summary": prereq.summary(res)}
+    branch = n["spec"].split("@", 1)[0]
+    others = sorted({v.split("/", 1)[0] for k, v in prereq.TOKEN_RE.findall(text) if k == "node" and "/" in v} - {line})
+    if others:
+        states.update(_line_states(pid, others))
+    res = prereq.check(text, branch, line, states, repo, _run, remote)
+    if old and res["format"]:
+        if not res["missing"]:
+            return {"applies": False, "ok": True, "res": res, "summary": "旧节点的说明没有可核对的前置条件，不查"}
+        res = dict(res, format=[], ok=False)
+    return {"applies": True, "ok": res["ok"], "res": res, "summary": prereq.summary(res)}
+
+
+def prereq_block_event(a, line, node, chk):
+    actor = {"role": getattr(a, "role", None) or "router",
+             "handle": a.as_handle or os.environ.get("ORCA_TERMINAL_HANDLE"),
+             "workspace": os.environ.get("ORCA_WORKSPACE_ID")}
+    return {"kind": "node_block", "actor": {k: v for k, v in actor.items() if v}, "line": line, "node": node,
+            "blocker": "dep", "summary": chk["summary"], "prereq_missing": chk["res"]["missing"]}
+
+
 def parser():
     p = argparse.ArgumentParser(prog="progress", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -257,7 +354,10 @@ def parser():
             s.add_argument("--next-ready")
         if cmd == "deliver":
             s.add_argument("--blocked-by", dest="blocked_by",
-                           help="PARTIAL/FAIL sent before a third of the node budget: name the external blocker")
+                           help="with --outcome BLOCKED: what is still missing (budget: the work left)")
+            s.add_argument("--blocker", choices=sorted(core.DELIVER_BLOCKERS), help="with --outcome BLOCKED")
+            s.add_argument("--result", choices=sorted(core.RESULTS),
+                           help="with PASS: the experiment ran but the research result missed the bar")
         if cmd in ("deliver", "block", "heartbeat"):
             s.add_argument("--failure", dest="failures", action="append",
                            help="one distinct failure still unresolved at delivery (test name / error class); repeat for each; omit fixed ones")
@@ -284,6 +384,12 @@ def parser():
                                 "default: review if the node id contains review/recheck/audit, else run")
             s.add_argument("--milestones", help="comma list of milestone ids this node serves")
             s.add_argument("--no-auto", action="store_true", help="patrol must not dispatch it")
+    s = sub.add_parser("precheck", help="R1: check a node spec's 前置条件; missing inputs -> node_block blocker=dep")
+    s.add_argument("--line", required=True)
+    s.add_argument("--node", required=True)
+    s.add_argument("--as", dest="as_handle")
+    s.add_argument("--role", choices=["router", "worker", "patrol"], default="router")
+    s.add_argument("--dry-run", action="store_true", help="only print, never write node_block")
     s = sub.add_parser("propose", help="commit a sub-graph proposal (JSON file) after the deterministic gate")
     s.add_argument("file", help="proposal JSON (see autotaskgen/graph.py); '-' reads stdin")
     s.add_argument("--line", help="overrides the file's line")
@@ -458,7 +564,31 @@ def main(argv=None):
             return emit(st)
         if a.cmd == "guard-scan":
             return emit(workpush.serve_guard_scan(json.loads(sys.stdin.read())))
+        if a.cmd == "precheck":
+            chk = run_precheck(pid, a.line, a.node)
+            missing = bool(chk.get("res") and chk["res"].get("missing") and not chk["res"].get("format"))
+            if missing and not a.dry_run:
+                submit(pid, prereq_block_event(a, a.line, a.node, chk),
+                       {"ok": False, "precheck": "missing", "detail": chk.get("res"),
+                        "hint": "已记 node_block dep；缺的输入出现后巡检会自动派（节点要有 spec 和 route），没有 route 的会提醒你派"})
+                return 2
+            return emit(dict(chk, precheck="ok" if chk["ok"] else "fail"), 0 if chk["ok"] else 2)
         ev = build_event(a.cmd, a)
+        if a.cmd == "dispatch" and (a.role or "router") == "router" and os.environ.get("PROGRESS_PRECHECK") != "0":
+            chk = run_precheck(pid, a.line, a.node)
+            if chk["applies"]:
+                ev["prereq"] = {"ok": chk["ok"], "summary": chk["summary"]}
+            res = chk.get("res") or {}
+            if chk["applies"] and res.get("format"):
+                return emit({"ok": False, "code": "prereq_format", "error": chk["summary"] + "。补好说明的「前置条件」一节"
+                             "（每项带 `node:…` / `sha:…` / `file:…`）、重新 progress plan 后再派；已经起了 worker 就先停掉它。",
+                             "detail": res}, 2)
+            if chk["applies"] and res.get("missing"):
+                submit(pid, prereq_block_event(a, a.line, a.node, chk),
+                       {"ok": False, "dispatch_refused": True, "code": "prereq_missing",
+                               "error": chk["summary"] + "。没有记派出，已改记 node_block dep；已经起了 worker 就先停掉它，"
+                               "缺的输入出现后巡检会自动派。下次先跑 progress precheck 再起 worker。"})
+                return 2
         return submit(pid, ev, push_step(a.cmd, a, pid, ev))
     except core.ProgressError as exc:
         return emit(exc.as_dict(), 2)

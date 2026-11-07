@@ -45,13 +45,21 @@ progress plan --line <线> --node <节点> --title "标题" --deps a,b \
 - **段要标结构**：后一步要用前一步的结果、或共享同一份正在改的状态 → `serial`（一次只跑一个，最好一个 worker 连着做完）；输入独立、写域不重叠、能各自验收 → `parallel`。标了 parallel 但写域重叠或互相依赖的，闸门会自动改成 serial 并告诉你；**兄弟节点验收标准一字不差的直接拒收**——每个节点写只属于它的验收（它自己的产物、测试或报告），提交前 `--check` 看一眼。（11-07：SR、NEWP 各一次被改成串行后取消重排。）
 - **先让线上有活在跑，再自己动手**：要自己做超过 10 分钟的事（冻结配置、写脚本、读长报告、起草接口）之前，先把待审的交付审完、就绪的节点派出去，这几步通常几分钟；自己动手的这段时间里线上要一直有节点在跑。能交给 worker 的长活，排成节点。（11-07：FE、EVB、NEWP 的 router 各自动手做 10–25 分钟的活，期间线上 0 个在跑，NEWP 另有 2 个交付等了 25 分钟没审。）
 - **节点大小 30 分钟–2 小时**：一件能自己验收的事。太碎的合并，太大的拆开。
-- **验收标准只写这个节点用现有输入能做到的**：要用别的还没交付的节点（在跑的通用工具、待冻结的清单、待裁定的口径）产物的那部分，另排一个后续节点、`deps` 指向那个上游，等它交付后自动 ready；不要把它写进本节点的验收，让节点注定以 PARTIAL 收尾。审查时 PARTIAL 剩下的若只差某个上游，同样按这条接一个带 `deps` 的后续节点，不要原样重派。（11-06：一个半小时 13 个交付里 9 个 PARTIAL 是"等上游"造成的。）
+- **验收标准只写这个节点用现有输入能做到的**：要用别的还没交付的节点（在跑的通用工具、待冻结的清单、待裁定的口径）产物的那部分，另排一个后续节点、`deps` 指向那个上游，等它交付后自动 ready；不要把它写进本节点的验收，让节点注定交不了 PASS（11-07 起交付不收 PARTIAL）。审查时 PARTIAL 剩下的若只差某个上游，同样按这条接一个带 `deps` 的后续节点，不要原样重派。（11-06：一个半小时 13 个交付里 9 个 PARTIAL 是"等上游"造成的。）
 - **多个节点共用一份刚交付的合同/接口时，先试接一个再扇出**：先派一个下游节点按合同实际接入（或把"被一个下游真实接入通过"写进上游的验收），接通了再并行派其余；试接暴露的缺口回上游补，不让所有兄弟节点各自撞上同一缺口。（11-06：G2 核心交付后同时派 7 个原语，6 个因同一份合同缺项以 PARTIAL 收尾。）
 - 每个节点必须有验收标准（拆的时候写），有预算，run/plan 有写域且在父节点（或主线）写域内；预算合计不超父节点额度；单次最多 12 个，最多 8 层；必须引用依据。
 - **默认不排 review/check 节点**：普通交付由节点自己跑验收标准、你看交付记录接受或打回。只有关键结论（里程碑、改方向、对外的数字）才排一个 `check`。
 - 并行度是上限不是目标（project.json `max_parallel`，默认不设上限）：巡检只在真有独立的活时才叫你拆，并行位空着不会叫你。worker 交付时用 `--failure`（每个不同失败一条）、`--candidate`、`--touched` 报信号；巡检据此提示"可并行"或"并行塌缩"（同段兄弟撞同一失败、改同一处 → 请重拆或改串行）。
 
-## 2. 派出（dispatch）：派完立刻写
+## 2. 派出（dispatch）：先核前置条件，派完立刻写
+
+每份节点说明（spec）必须有一节「前置条件」，逐项列出 worker 要用的输入，每项带一个可机械核对的标记（11-07 起）：
+`node:<节点>`（或 `node:<线>/<节点>`，该节点已交付 PASS 且没被审为 FAIL）、`sha:<提交>`、`file:<分支>@<路径>`（省掉分支就是 spec 所在分支）。
+什么都不需要就写一项「无」。说明里写全前置条件、完整目标和验收，worker 不需要再去别处找上下文；预算按"一单做完"来估。
+
+起 worker **之前**先跑 `progress precheck --line <线> --node <节点>`：缺哪一项它就记 `node_block blocker=dep` 并写明缺的是哪项，
+这时不要派；那一项出现后巡检会自动派（节点有 spec 和 route 时），否则巡检提醒你"前置条件齐了"。`progress dispatch` 也会再核一次，
+缺项时拒绝记派出、改记 block——已经起了的 worker 要停掉。
 
 ```
 progress dispatch --line <线> --node <节点> --task <task_…> --dispatch <ctx_…> \
@@ -67,9 +75,10 @@ progress dispatch --line <线> --node <节点> --task <task_…> --dispatch <ctx
 progress review --line <线> --node <节点> --outcome PASS|PARTIAL|FAIL|UNKNOWN --summary "审查结论"
 ```
 `review` 写记录前会把你当前目录所在分支推到 GitHub origin（这就是接受/合并结果的上传）；代写的 `deliver` 推 `--head` 所在 worktree 的分支。所以先 commit 再写 review；main/master 永远不推，也不要手推 main。输出里出现 `push_failed` 就按原因处理（排除规则拦下、rebase 冲突、网络），处理不了在汇报里写明，不要原样反复重试。
-worker 没写 deliver 就自己做完了：你代写，加 `--role router`：
+交付只有 `PASS`（可带 `--result negative`：实验做完、研究结果不达标）和 `BLOCKED`（带分类和还差什么）两种；`BLOCKED` 的节点回到"卡住"，按分类处理（dep 等上游、budget 补预算或拆单、design 去裁决）。
+worker 没写 deliver 就自己做完了：你代写，加 `--role router`（同样只收 PASS / BLOCKED）：
 ```
-progress deliver --role router --line <线> --node <节点> --outcome PARTIAL --report <路径> --head <sha> --summary "代写：…"
+progress deliver --role router --line <线> --node <节点> --outcome PASS --report <路径> --head <sha> --summary "代写：…"
 ```
 
 ## 4. 取代 / 取消

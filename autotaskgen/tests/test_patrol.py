@@ -78,6 +78,12 @@ class Base(unittest.TestCase):
 
 
 class Dispatch(Base):
+    def test_local_route_leaves_on_out(self):
+        argv = patrol.start_argv("s", dict(ROUTE, on="mac"), {"run": "run_x"}, {"id": "a"}, "br", "wt")
+        self.assertNotIn("--on", argv)
+        argv = patrol.start_argv("s", ROUTE, {"run": "run_x"}, {"id": "a"}, "br", "wt")
+        self.assertEqual(argv[argv.index("--on") + 1], "wsl")
+
     def test_once_only_across_two_runs(self):
         self.add(plan_ev("L", "a"))
         self.put_live(live())
@@ -158,7 +164,7 @@ class Dispatch(Base):
     def test_dependency_met_by_partial_delivery(self):
         self.add(plan_ev("L", "a", auto_dispatch=False), plan_ev("L", "b", deps=["a"]),
                  {"kind": "node_deliver", "line": "L", "node": "a", "outcome": "PARTIAL", "summary": "d",
-                  "actor": {"role": "router", "handle": R}, "at": at(100)})
+                  "actor": {"role": "import", "handle": "import"}, "at": at(100)})
         self.put_live(live())
         fr = FakeRunner()
         self.run_patrol(fr)

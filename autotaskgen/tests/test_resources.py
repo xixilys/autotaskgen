@@ -167,7 +167,7 @@ class UnreviewedEscalation(Base):
         super().setUp()
         for i, n in enumerate("abc"):
             self.add(plan_ev("L", n, auto_dispatch=False),
-                     {"kind": "node_deliver", "line": "L", "node": n, "outcome": "PARTIAL", "summary": "d",
+                     {"kind": "node_deliver", "line": "L", "node": n, "outcome": "PASS", "summary": "d",
                       "actor": {"role": "router", "handle": R}, "at": at(180 - 30 * i)})
 
     def sends_to(self, fr, h):

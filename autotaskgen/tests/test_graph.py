@@ -329,6 +329,11 @@ def deliver(nid, minutes_ago, outcome="PASS", handle="term_new-worker", **kw):
     return ev
 
 
+def imported(handle="term_new-worker"):
+    """actor for a FAIL/PARTIAL delivery: worker/router may only deliver PASS or BLOCKED (R2), history import may not."""
+    return {"role": "import", "handle": handle}
+
+
 def dispatch(nid, minutes_ago, terminal="term_new-worker", task=None, disp=None):
     refs = {"terminal": terminal}
     if task:
@@ -475,7 +480,7 @@ class Signals(GBase):
         return [c[c.index("--text") + 1] for c in fr.kinds("send")]
 
     def test_distinct_failures_wake_router_once(self):
-        self.add(deliver("x", 30, outcome="FAIL", failures=["test_a 断言失败", "test_b 超时", "test_a 断言失败"]))
+        self.add(deliver("x", 30, outcome="FAIL", failures=["test_a 断言失败", "test_b 超时", "test_a 断言失败"], actor=imported()))
         self.put_live(live())
         fr = FakeRunner()
         out = self.run_patrol(fr)
@@ -487,7 +492,7 @@ class Signals(GBase):
         self.assertFalse(any("可并行" in t for t in self.texts(fr2)))
 
     def test_single_failure_or_idle_slots_do_not_wake(self):
-        self.add(deliver("x", 30, outcome="FAIL", failures=["test_a 断言失败"]))
+        self.add(deliver("x", 30, outcome="FAIL", failures=["test_a 断言失败"], actor=imported()))
         self.put_live(live())
         fr = FakeRunner()
         out = self.run_patrol(fr)
@@ -505,7 +510,7 @@ class Signals(GBase):
 
     def test_reviewed_delivery_is_not_hinted(self):
         # 11-06: the router reviewed the delivery (and declined to split) before patrol saw it
-        self.add(deliver("x", 30, outcome="PARTIAL", candidates=["方案 A", "方案 B"]),
+        self.add(deliver("x", 30, outcome="PARTIAL", candidates=["方案 A", "方案 B"], actor=imported()),
                  {"kind": "node_review", "line": "L", "node": "x", "outcome": "PARTIAL", "summary": "不拆",
                   "at": at(20), "actor": {"role": "router", "handle": "term_router"}})
         self.put_live(live())
@@ -518,7 +523,7 @@ class Signals(GBase):
         self.add(prop_ev(proposal(("p", "serial", [child("p1", kind="plan", minutes=300, nodes=6)])), minutes_ago=110),
                  dispatch("p1", 100, terminal=SUB))
         self.add(prop_ev(proposal(("a", "serial", [child("y")]), parent="p1"), actor=SUB, minutes_ago=90),
-                 dispatch("y", 80), deliver("y", 20, outcome="FAIL", failures=["e1", "e2 other"]))
+                 dispatch("y", 80), deliver("y", 20, outcome="FAIL", failures=["e1", "e2 other"], actor=imported()))
         lv = live()
         lv["router_tree"] = [{"handle": SUB, "kind": "sub", "present": True}]
         self.put_live(lv)
@@ -535,7 +540,7 @@ class Collapse(GBase):
                  dispatch("x", 100), dispatch("y", 100, terminal="term_w2"))
 
     def test_same_failure_collapse_holds_segment_and_tells_router(self):
-        self.add(deliver("x", 30, outcome="FAIL", failures=["ImportError: no module foo 12"]),
+        self.add(deliver("x", 30, outcome="FAIL", failures=["ImportError: no module foo 12"], actor=imported()),
                  {"kind": "node_block", "line": "L", "node": "y", "blocker": "env", "summary": "卡",
                   "at": at(20), "actor": {"role": "worker", "handle": "term_w2"},
                   "failures": ["ImportError: no module foo 99"]})
@@ -568,8 +573,8 @@ class Collapse(GBase):
         self.assertTrue(any(x["code"] == "collapse" for x in out["findings"]))
 
     def test_independent_failures_no_collapse(self):
-        self.add(deliver("x", 30, outcome="FAIL", failures=["test_a"]),
-                 deliver("y", 30, outcome="FAIL", failures=["test_b"], handle="term_w2"))
+        self.add(deliver("x", 30, outcome="FAIL", failures=["test_a"], actor=imported()),
+                 deliver("y", 30, outcome="FAIL", failures=["test_b"], actor=imported("term_w2")))
         self.put_live(live())
         out = self.run_patrol(FakeRunner(), apply=False)
         self.assertFalse(any(x["code"] == "collapse" for x in out["findings"]))

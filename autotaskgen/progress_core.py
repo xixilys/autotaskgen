@@ -34,8 +34,15 @@ KINDS = {
 NODE_KINDS = {"node_plan", "node_dispatch", "node_heartbeat", "node_deliver", "node_review",
               "node_block", "node_supersede", "node_cancel", "auto_dispatch", "decision", "human_reply"}
 MILESTONE_KINDS = {"milestone_claim", "milestone_confirm", "milestone_reject"}
-OUTCOMES = {"PASS", "PARTIAL", "FAIL", "UNKNOWN"}
-BLOCKERS = {"dep", "design", "env", "resource", "human", "other"}
+OUTCOMES = {"PASS", "PARTIAL", "FAIL", "UNKNOWN", "BLOCKED"}
+BLOCKERS = {"dep", "design", "env", "resource", "human", "other", "budget"}
+# router rules v2 R2 (11-07): a delivery is either done (PASS, optionally result=negative: the experiment ran, the
+# research result missed) or BLOCKED with a category and what is still missing. PARTIAL / FAIL / UNKNOWN deliveries
+# are refused for worker and router; reviews keep their four verdicts; imported history is untouched.
+DELIVER_OUTCOMES = {"PASS", "BLOCKED"}
+DELIVER_BLOCKERS = {"dep", "env", "human", "budget", "design"}
+REVIEW_OUTCOMES = {"PASS", "PARTIAL", "FAIL", "UNKNOWN"}
+RESULTS = {"negative"}
 NODE_STATES = ["planned", "ready", "running", "delivered", "reviewed", "blocked", "failed",
                "superseded", "cancelled"]
 ROLES = {"router", "worker", "coordinator", "patrol", "import", "human", "maintainer"}
@@ -333,6 +340,22 @@ def validate(event: Dict[str, Any], project: Dict[str, Any], state: Dict[str, An
         bad("no_outcome", "%s 必须带 outcome" % kind)
     if kind == "node_block" and event.get("blocker") not in BLOCKERS:
         bad("bad_blocker", "blocker 只能是 %s" % "/".join(sorted(BLOCKERS)))
+    if kind == "node_review" and event.get("outcome") == "BLOCKED":
+        bad("bad_outcome", "审查结论只能是 %s" % "/".join(sorted(REVIEW_OUTCOMES)))
+    if kind == "node_deliver" and role in ("worker", "router") and event.get("outcome") in OUTCOMES:
+        oc = event.get("outcome")
+        if oc not in DELIVER_OUTCOMES:
+            bad("deliver_outcome", "交付不收 %s，只收 PASS 或 BLOCKED：没做完就接着做到完成再交；实验做完但研究结果不达标，"
+                "记 PASS 加 --result negative；被挡住或预算用完，记 BLOCKED 加 --blocker dep|env|human|budget|design "
+                "和 --blocked-by \"还差什么\"。" % oc)
+        elif oc == "BLOCKED":
+            if event.get("blocker") not in DELIVER_BLOCKERS:
+                bad("deliver_blocker", "BLOCKED 交付必须带 --blocker，只能是 %s" % "/".join(sorted(DELIVER_BLOCKERS)))
+            if not str(event.get("blocked_by") or "").strip():
+                bad("deliver_blocker", "BLOCKED 交付必须用 --blocked-by 写明还差什么（预算用完就写剩下的工作量）")
+    if kind == "node_deliver" and event.get("result") is not None and (
+            event.get("result") not in RESULTS or event.get("outcome") != "PASS"):
+        bad("bad_result", "result 只能是 negative，且只用在 PASS 交付上")
     for msg in _push_field_errors(event):
         bad("bad_push", msg)
 
@@ -369,21 +392,7 @@ def validate(event: Dict[str, Any], project: Dict[str, Any], state: Dict[str, An
             bad("patrol_deliver", "巡检只能为 decide 节点写 node_deliver（节点 %s 不是 decide）" % node)
         elif not (event.get("refs") or {}).get("card"):
             bad("patrol_deliver", "巡检写 decide 节点的 node_deliver 必须带 refs.card")
-    if kind == "node_deliver" and role == "worker" and node in nodes and event.get("outcome") in ("PARTIAL", "FAIL") \
-            and not str(event.get("blocked_by") or "").strip():
-        n = nodes[node]
-        try:
-            budget = float(n.get("expected_duration_minutes") or 0)
-        except (TypeError, ValueError):
-            budget = 0
-        t0 = parse_iso(n.get("dispatched_at"))
-        t1 = parse_iso(event.get("at")) or _dt.datetime.now(_dt.timezone.utc)
-        if budget > 0 and t0:
-            used = (t1 - t0).total_seconds() / 60
-            if used < budget / 3:
-                bad("early_deliver", "预算 %g 分钟只用了 %d 分钟就交 %s：剩下的验收条目不靠别人的活就接着做完再交；"
-                    "确实被外部挡住（缺哪个上游节点的产物／等哪个裁决／哪个环境或额度），"
-                    "加 --blocked-by \"挡在哪\" 重发同一条 deliver。" % (budget, max(used, 0), event["outcome"]))
+    # (the 11-06 early_deliver gate on PARTIAL/FAIL is gone: R2 refuses those deliveries outright)
     if kind == "worker_release" and node and node not in nodes:
         bad("unknown_node", "节点 %s 还没有 node_plan" % node)
     if kind == "node_supersede":
@@ -675,6 +684,7 @@ def fold(project: Dict[str, Any], events: List[Dict[str, Any]], at: Optional[str
                 n["worktree"] = refs.get("worktree") or n.get("worktree")
             elif kind in ("node_dispatch", "auto_dispatch"):
                 n["status"] = "running"
+                n.pop("prereq_missing", None)
                 n["dispatched_at"] = at_ev
                 n["dispatch_count"] = n.get("dispatch_count", 0) + 1
                 n["worker"] = refs.get("terminal") or n.get("worker")
@@ -703,6 +713,12 @@ def fold(project: Dict[str, Any], events: List[Dict[str, Any]], at: Optional[str
                 n["delivered_at"] = at_ev
                 n["status"] = "failed" if ev.get("outcome") == "FAIL" else "delivered"
                 n["model"] = (ev.get("actor") or {}).get("model") or n.get("model")
+                n["result"] = ev.get("result")
+                if ev.get("outcome") == "BLOCKED":   # R2: a blocked delivery leaves the node blocked, not delivered
+                    n["status"] = "blocked"
+                    n["blocker"] = ev.get("blocker")
+                    n["blocked_at"] = at_ev
+                    n["blocked_by"] = ev.get("blocked_by")
             elif kind == "node_review":
                 n["review"] = ev.get("outcome")
                 n["reviewed_at"] = at_ev
@@ -711,6 +727,8 @@ def fold(project: Dict[str, Any], events: List[Dict[str, Any]], at: Optional[str
                 n["status"] = "blocked"
                 n["blocker"] = ev.get("blocker")
                 n["blocked_at"] = at_ev
+                # R1: patrol re-checks these and dispatches once every listed input exists
+                n["prereq_missing"] = list(ev.get("prereq_missing") or []) or None
             elif kind == "node_supersede":
                 n["status"] = "superseded"
                 n["by"] = ev.get("by")

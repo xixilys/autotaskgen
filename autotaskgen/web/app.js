@@ -13,8 +13,16 @@
   };
   var STATUS_ORDER = ["planned", "ready", "running", "delivered", "reviewed", "blocked", "failed",
     "superseded", "cancelled", "unknown"];
-  var OUTCOME = { PASS: "通过", PARTIAL: "部分通过", FAIL: "没通过", UNKNOWN: "结果不明" };
-  var BLOCKER = { dep: "等依赖", design: "设计没定", env: "环境问题", resource: "缺资源", other: "其他原因" };
+  var OUTCOME = { PASS: "通过", PARTIAL: "部分通过", FAIL: "没通过", UNKNOWN: "结果不明", BLOCKED: "被挡住" };
+  var BLOCKER = { dep: "等依赖", design: "设计没定", env: "环境问题", resource: "缺资源", other: "其他原因",
+    human: "等人", budget: "预算用完" };
+  // R2 (11-07): PASS with result=negative = the experiment ran, the research result missed the bar
+  function deliverText(o, result, blocker) {
+    var t = OUTCOME[o] || o;
+    if (o === "PASS" && result === "negative") t += "（负结果）";
+    if (o === "BLOCKED" && blocker) t += "：" + (BLOCKER[blocker] || blocker);
+    return t;
+  }
   var MS_STATUS = { open: "未达成", claimed: "已报，等协调人确认", confirmed: "已确认达成" };
   var SCREEN = { stream_error: "末屏在报错", stuck: "末屏像卡住", waiting_input: "末屏在等输入" };
   var ROLE = { router: "router", worker: "worker", coordinator: "协调人", patrol: "巡检", "import": "导入", human: "人" };
@@ -1360,7 +1368,7 @@
       '<span class="ic" style="color:' + (KIND_COLOR[e.kind] || "var(--ink-2)") + '">' + icon(k[1]) + "</span>" +
       '<div class="fb"><div class="r1">' + (role ? '<span class="role r-' + esc(role) + '">' + esc(ROLE[role] || role) + "</span>" : "") +
       '<b class="kn">' + esc(k[0]) + "</b>" + (e.line ? '<span class="ln">' + esc(e.line) + "</span>" : e.milestone ? '<span class="ln">' + esc(e.milestone) + "</span>" : "") +
-      (e.outcome ? '<span class="oc o-' + esc(e.outcome) + '">' + esc(OUTCOME[e.outcome] || e.outcome) + "</span>" : "") +
+      (e.outcome ? '<span class="oc o-' + esc(e.outcome) + '">' + esc(e.kind === "node_deliver" ? deliverText(e.outcome, e.result, e.blocker) : OUTCOME[e.outcome] || e.outcome) + "</span>" : "") +
       '<span class="t" title="' + esc((orig ? "写入看板的时间，原始时间见正文：" : "") + when(e.at)) + '">' + (orig ? "记录于 " : "") + esc(hmTime(e.at)) + "</span></div>" +
       (e.node ? '<div class="nd" title="' + esc(e.node) + '">' + esc(e.node) + "</div>" : "") +
       '<div class="txt">' + (e.kind === "decision" && DECISION[e.result] ? "[" + esc(DECISION[e.result]) + "] " : "") + esc(e.summary || "") + "</div></div></li>";
@@ -1439,7 +1447,7 @@
     }
     var s0 = nodeStatus(n);
     var extra = [];
-    if (n.outcome) extra.push("交付：" + (OUTCOME[n.outcome] || n.outcome));
+    if (n.outcome) extra.push("交付：" + deliverText(n.outcome, n.result, n.blocker));
     if (n.review) extra.push("审查：" + (OUTCOME[n.review] || n.review));
     if (n.blocker) extra.push(BLOCKER[n.blocker] || n.blocker);
     if (n.milestones && n.milestones.length) extra.push("服务 " + n.milestones.join("、"));
@@ -1561,7 +1569,7 @@
     html += dl([
       n.kind ? ["节点类型", n.kind === "review" ? "审查（只读和判断，不重跑重活）" : "执行（开发/跑任务）"] : null,
       w && wStall(w) ? ["worker 屏幕", wStall(w).long + (wStall(w).line ? "：" + wStall(w).line : "")] : null,
-      ["交付结果", n.outcome ? OUTCOME[n.outcome] || n.outcome : "还没交付"],
+      ["交付结果", n.outcome ? deliverText(n.outcome, n.result, n.blocker) + (n.outcome === "BLOCKED" && n.blocked_by ? "，还差：" + n.blocked_by : "") : "还没交付"],
       ["审查结论", n.review ? OUTCOME[n.review] || n.review : "还没审查"],
       ["模型", n.model || (n.route && n.route.model)],
       w && wActivity(w) ? ["worker 输出", wActivity(w)] : null,

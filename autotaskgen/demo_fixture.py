@@ -122,7 +122,7 @@ def node_life(w, line, nid, title, start, steps, deps=(), milestones=(), model=N
             w.add("node_deliver", hr[0], hr[1], at, line=line, node=nid, model=model,
                   outcome=kw.pop("outcome"), summary=summ or "交付",
                   refs={"report": "docs/validation/router-%s/%s/REPORT.md" % (line, nid),
-                        "head": "%07x" % (zlib.crc32((nid + "h").encode()) % 16 ** 7)}, **extra)
+                        "head": "%07x" % (zlib.crc32((nid + "h").encode()) % 16 ** 7)}, **kw, **extra)
         elif kind == "review":
             w.add("node_review", who[0], who[1], at, line=line, node=nid,
                   outcome=kw.pop("outcome"), summary=summ or "审查", **extra)
@@ -148,11 +148,11 @@ def build_demo(w):
         ("dispatch", 10, {}), ("deliver", 300, {"outcome": "PASS", "summary": "三种轨迹格式都能读入"}),
         ("review", 360, {"outcome": "PASS", "summary": "抽查 20 条，格式正确"})], model=T, milestones=["M1"])
     node_life(w, "EVB", "evb_cache_model", "缓存层次模型", 2700, [
-        ("dispatch", 20, {}), ("deliver", 400, {"outcome": "PARTIAL", "summary": "L1/L2 对上，L3 偏差 22%"}),
+        ("dispatch", 20, {}), ("deliver", 400, {"outcome": "PASS", "result": "negative", "summary": "L1/L2 对上，L3 偏差 22%"}),
         ("review", 460, {"outcome": "PARTIAL", "summary": "L3 偏差记入下一节点"})],
         deps=["evb_trace_ingest"], model=S, milestones=["M1"])
     node_life(w, "EVB", "evb_mem_stream", "内存流水模型", 2500, [
-        ("dispatch", 30, {}), ("deliver", 500, {"outcome": "FAIL", "summary": "带宽饱和时误差 60%，模型结构不对"})],
+        ("dispatch", 30, {}), ("deliver", 500, {"outcome": "PASS", "result": "negative", "summary": "带宽饱和时误差 60%，模型结构不对"})],
         deps=["evb_cache_model"], model=L)
     node_life(w, "EVB", "evb_mem_stream_repair", "内存流水模型（修复）", 1900, [
         ("dispatch", 10, {}), ("deliver", 380, {"outcome": "PASS", "summary": "改成排队模型后误差 9%"}),
@@ -203,7 +203,8 @@ def build_demo(w):
         ("review", 700, {"outcome": "PASS", "summary": "复算一致"})], deps=["sr_feature_set"], model=S,
         milestones=["M3"])
     node_life(w, "SR", "sr_ablation", "特征消融", 1200, [
-        ("dispatch", 10, {}), ("deliver", 500, {"outcome": "UNKNOWN", "summary": "两组结果矛盾，原因未明"})],
+        ("dispatch", 10, {}), ("deliver", 500, {"outcome": "BLOCKED", "blocker": "design", "blocked_by": "两组结果矛盾，原因未明，要先定位",
+                          "summary": "两组结果矛盾，原因未明"})],
         deps=["sr_rank_model"], model=F)
     node_life(w, "SR", "sr_transfer", "跨应用迁移", 800, [
         ("dispatch", 20, {}), ("heartbeat", 500, {})], deps=["sr_rank_model"], model=S, expected=900)
@@ -226,7 +227,8 @@ def build_demo(w):
           summary="接口 v1 已签字", refs={"report": "docs/design/rsi/EVALUATOR_INTERFACE.md"})
     w.add("milestone_confirm", "coordinator", C2, t(2500), milestone="M2", summary="确认")
     node_life(w, "FE", "fe_search_lanes", "并行搜索通道", 1500, [
-        ("dispatch", 10, {}), ("deliver", 700, {"outcome": "PARTIAL", "summary": "4 条通道跑通，合并策略未定"})],
+        ("dispatch", 10, {}), ("deliver", 700, {"outcome": "BLOCKED", "blocker": "design", "blocked_by": "通道合并策略未定",
+                          "summary": "4 条通道跑通，合并策略未定"})],
         deps=["fe_iface_v1"], model=S, milestones=["M4"])
     node_life(w, "FE", "fe_merge_policy", "通道合并策略", 650, [
         ("dispatch", 10, {}), ("heartbeat", 300, {})], deps=["fe_search_lanes"], model=T, milestones=["M4"],
@@ -249,7 +251,7 @@ def build_demo(w):
         ("dispatch", 10, {}), ("block", 280, {"blocker": "env", "summary": "向量库服务连不上"})],
         deps=["ag_loop_skeleton"], model=L)
     node_life(w, "AG", "ag_policy_v0", "策略 v0", 1100, [
-        ("dispatch", 10, {}), ("deliver", 300, {"outcome": "FAIL", "summary": "策略原地打转"})],
+        ("dispatch", 10, {}), ("deliver", 300, {"outcome": "PASS", "result": "negative", "summary": "策略原地打转"})],
         deps=["ag_loop_skeleton"], model=T)
     node_life(w, "AG", "ag_policy_v1", "策略 v1", 700, [
         ("dispatch", 10, {})], deps=["ag_loop_skeleton"], model=S, milestones=["M4"], expected=300)
@@ -270,7 +272,7 @@ def build_demo(w):
         ("dispatch", 10, {})], deps=["kb_paper_index"], model=L, expected=600)
     node_life(w, "KB", "kb_rule_check", "规则核对", 200, [], deps=["kb_retrieval"], model=F)
     node_life(w, "KB", "kb_rule_mining", "规则挖掘试验", 900, [
-        ("dispatch", 5, {}), ("deliver", 260, {"outcome": "FAIL", "summary": "抽出的规则大多不成立"})],
+        ("dispatch", 5, {}), ("deliver", 260, {"outcome": "PASS", "result": "negative", "summary": "抽出的规则大多不成立"})],
         deps=["kb_paper_index"], model=F)
     node_life(w, "KB", "kb_eval_set", "检索评测集", 820, [
         ("dispatch", 5, {}), ("deliver", 240, {"outcome": "PASS", "summary": "评测集 200 条"})],

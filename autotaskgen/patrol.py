@@ -125,6 +125,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import decide  # noqa: E402
 import graph  # noqa: E402
+import prereq  # noqa: E402
 import progress_core as core  # noqa: E402
 import snapshot as snap  # noqa: E402
 import alerts as qq_alerts  # noqa: E402
@@ -173,7 +174,8 @@ REJECT_RETRY_MIN = 60         # retry an unchanged argv only after this long
 REJECT_MARK = "代派被 Orca 拒绝"
 REJECT_RE = re.compile(r"requires|invalid|unknown (option|flag|argument)|usage:|not found|no such", re.I)
 UNDISP_WHY = {"spec_unreadable": "spec 读不到", "decide_unready": "decide 不能交面板",
-              "dispatch_rejected": REJECT_MARK}
+              "dispatch_rejected": REJECT_MARK, "prereq_format": "说明的前置条件无法核对",
+              "prereq_unchecked": "前置条件暂时查不了"}
 STALL_PROJECT_MIN = 60        # no router/worker event on any open line this long (with running/ready nodes) -> QQ stall:project
 OUTAGE_MIN_SCREENS = 2        # distinct agent screens with a transient model/API error -> QQ outage:model
 OUTAGE_TERRA_FAILS = 2        # supervisor (terra) calls failed in a row -> QQ outage:model
@@ -196,11 +198,11 @@ SPEC_SNIPPET = """<!-- progress-worker -->
 ## 进度记录（必做，看板和巡检只读这份记录）
 本节点：主线 `{line}`，节点 `{node}`。命令 `progress`（没有就用 `~/.progress/bin/progress`）。
 - 开工前（以及中断、换终端、上下文压缩后）先运行 `progress-inspect resume --line {line} --node {node}` 读节点历史和本线经验；经验里写了的规则照做。
-- 交付：**先**写 `progress deliver --line {line} --node {node} --outcome PASS|PARTIAL|FAIL|UNKNOWN --report <REPORT 路径> --head <git sha> --summary "一句白话"`，**再**给 router 发 worker_done；顺序不能反。
+- 交付：**先**写 `progress deliver --line {line} --node {node} --outcome PASS|BLOCKED --report <REPORT 路径> --head <git sha> --summary "一句白话"`，**再**给 router 发 worker_done；顺序不能反。只有两种结果：做完是 PASS（实验做完但研究结果不达标也是 PASS，加 `--result negative`）；被挡住是 BLOCKED，加 `--blocker dep|env|human|budget|design --blocked-by "还差什么"`。PARTIAL、FAIL 会被拒收。
 - `progress deliver` 会自动把本分支推到 GitHub origin（不推 main）：交付前先 `git commit`；输出里出现 `push_failed` 就按原因修好（或在交付消息里写明），不要原样反复重试。
 - 交付时报并行信号（巡检据此叫 router 拆分或判定撞车）：`--failure "<错误类别或测试名>"`，写类别不写描述（如 `CG16_BINDING_MISSING`、`test_jacobi_single`，40 字以内），同一种失败在不同节点用同一个词，巡检才能归并；只写交付时仍没解决、还要有人动手的失败，每个不同的一条，已修好的不写；`--candidate "<候选>"`，只写还没做、彼此独立、能分给别人并行做的方向，每个一条，已经跑过的不写；`--touched <路径1,路径2>`，写实际改了的文件。没有就省略该项，`--touched` 只要改了文件就必须写。
-- 不提前收工：预算没用完、剩下的验收条目也不靠别人的活、待定裁决或环境时，接着做完再交。只有剩下每一条都被外部挡住才交 PARTIAL，并在报告里逐条写挡在哪（缺谁的活／等哪个裁决／哪个环境）；能自己做的缺口不算挡住。deliver 会拒绝预算用不到三分之一就交的 PARTIAL/FAIL，除非加 `--blocked-by "挡在哪"` 写明外部挡住的是什么。要以"等裁定"为由交 PARTIAL 或写 block 之前，先重跑一次 `progress-inspect resume --line {line} --node {node}`，看协调人和 router 在你开工后有没有已经裁了（project_update）；已裁的按裁定接着做完，不算外部挡住。
-- 卡住：`progress block --line {line} --node {node} --blocker dep|design|env|resource|human|other --summary "卡在哪"`，然后停下等指示。等别的节点或别的线交东西标 dep；等协调人或 router 裁定、批准、GO、预算标 design；human 只用于只有人本人能给的东西（真实端点、材料、目标决定），它会发到人的 QQ 上。收到继续的指示（GO、裁定、依赖到了）接着干时，先发一条 `progress heartbeat`，节点才会从"卡住"回到"在跑"；分阶段等 GO 的，每进一个阶段都发一条。
+- 做不完就接着做，不先交一部分：预算没用完、剩下的验收条目不靠别人的活，就做完再交。预算用完报 `BLOCKED --blocker budget`，`--blocked-by` 写剩下的工作量；缺别的节点或文件的产物报 dep，等裁决报 design，环境坏了报 env，只有人本人能给的报 human。以"等裁定"为由报 BLOCKED 之前，先重跑一次 `progress-inspect resume --line {line} --node {node}`，看协调人和 router 在你开工后有没有已经裁了（project_update）；已裁的按裁定接着做完。
+- 卡住：`progress block --line {line} --node {node} --blocker dep|design|env|resource|human|budget|other --summary "卡在哪"`，然后停下等指示。等别的节点或别的线交东西标 dep；等协调人或 router 裁定、批准、GO、预算标 design；human 只用于只有人本人能给的东西（真实端点、材料、目标决定），它会发到人的 QQ 上。收到继续的指示（GO、裁定、依赖到了）接着干时，先发一条 `progress heartbeat`，节点才会从"卡住"回到"在跑"；分阶段等 GO 的，每进一个阶段都发一条。
 - 遇到无法继续的报错，先写 progress block 再停，不要停在报错画面上。
 - 开工可选：`progress heartbeat --line {line} --node {node} --summary "在做什么"`。
 - summary 不超过 120 字，写做成了什么，不写内部字段名。
@@ -381,6 +383,10 @@ def line_repo(project: Dict[str, Any], line: Dict[str, Any]) -> Optional[str]:
     return named.pop() if len(named) == 1 else None
 
 
+LOCAL_ON = ("mac", "local")   # route "on" values that mean the Run's home machine (Orca: no --on; 11-07 probe:
+                              # `--on mac` failed with "Unknown environment: mac")
+
+
 def start_argv(spec_text: str, route: Dict[str, Any], line: Dict[str, Any], node: Dict[str, Any],
                base: str, name: str) -> List[str]:
     argv = [snap.orca_bin(), "orchestration", "worker-start", "--spec", spec_text,
@@ -389,7 +395,9 @@ def start_argv(spec_text: str, route: Dict[str, Any], line: Dict[str, Any], node
         argv += ["--model", route["model"]]
         if route.get("effort"):
             argv += ["--effort", route["effort"]]
-    argv += ["--on", route["on"], "--worktree", "new-top-level", "--base-branch", base, "--name", name,
+    if route["on"] not in LOCAL_ON:     # mac/local: the Run's home machine, which Orca names by leaving --on out
+        argv += ["--on", route["on"]]
+    argv += ["--worktree", "new-top-level", "--base-branch", base, "--name", name,
              "--task-title", _short(node.get("title") or node["id"], 80), "--timeout-ms", "180000", "--json"]
     if line.get("run"):
         argv += ["--run", line["run"]]
@@ -1516,6 +1524,8 @@ def plan(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[D
     """Pure decision step (reads specs via git and, with `apply`, idle worker screens): findings + actions."""
     state = core.fold(project, events, at=snap.iso(now))
     live_bad = live_usable(live, now)
+    prereq_remote = ({"host": snap.remote_host(), "repo": os.environ["PROGRESS_REMOTE_REPO"], "ssh": snap.ssh_argv}
+                     if os.environ.get("PROGRESS_REMOTE_REPO") else None)
     actions: List[Dict[str, Any]] = []
     findings: List[Dict[str, Any]] = []
     observes: List[Dict[str, Any]] = []
@@ -1619,6 +1629,10 @@ def plan(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[D
         repo = repo_path(project, line)
         dispatched_now = set()
         manual_ready = []
+        # R1: nodes patrol (or a router's precheck) blocked for missing inputs; re-checked every round
+        prereq_wait = sorted(nid for nid, n in nodes.items() if n.get("status") == "blocked" and n.get("blocker") == "dep"
+                             and n.get("prereq_missing") and ((n.get("history") or [{}])[-1].get("kind") == "node_block"))
+        prechecked: set = set()
         exp_defaults = dict(DEFAULT_EXPECTED, **((project.get("defaults") or {}).get("expected_minutes") or {}))
         metrics[lid] = graph.line_metrics(nodes, now, exp_defaults)
         rr = metrics[lid]["review_run"]
@@ -1691,9 +1705,27 @@ def plan(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[D
                         lid, nid, int(rec["tries"]), _short(rec.get("last_why") or "", 100)))
             elif n.get("auto_dispatch") and n.get("spec") and _is_worker_kind(n):
                 retry_ok[nid] = rec
-        for nid in list(graph.ready_queue(nodes, exp_defaults)) + sorted(retry_ok):
+        for nid in list(graph.ready_queue(nodes, exp_defaults)) + sorted(retry_ok) + prereq_wait:
             n = nodes[nid]
             is_retry = nid in retry_ok
+            if nid in prereq_wait:
+                spec_w = read_spec(n.get("spec"), repo, runner)
+                if spec_w.get("error"):
+                    continue
+                pc = prereq.check(spec_w["text"], spec_w.get("branch") or "", lid, state.get("lines") or {}, repo,
+                                  runner, prereq_remote)
+                if pc["missing"] or pc["unknown"]:
+                    continue    # still waiting; the block event already names what is missing
+                prechecked.add(nid)
+                if not n.get("auto_dispatch") or not _is_worker_kind(n):
+                    key = "prereq_ready:%s:%s" % (lid, nid)
+                    if _alert_due(nudges, "prereq_ready", key, n.get("blocked_at"), now):
+                        h_ = ((((live or {}).get("routers") or {}).get(lid) or {}).get("handle")) or line.get("router")
+                        a_ = alerts.setdefault(h_, {"line": lid, "target": h_, "texts": [], "keys": []})
+                        a_["texts"].append("%s 的前置条件已经齐了（之前缺：%s），可以派了" % (
+                            nid, "，".join(n.get("prereq_missing") or [])[:200]))
+                        a_["keys"].append((lid, key, "prereq_ready"))
+                    continue
             prior = [] if is_retry else [h for h in n.get("history") or [] if h.get("kind") in ("node_dispatch", "auto_dispatch")]
             if prior:
                 manual_ready.append(nid)
@@ -1749,6 +1781,28 @@ def plan(project: Dict[str, Any], events: List[Dict[str, Any]], live: Optional[D
                 findings.append({"line": lid, "node": nid, "code": "spec_unreadable", "why": spec["error"]})
                 observe("spec:%s:%s" % (lid, nid), lid, nid, spec["error"], code="spec_unreadable")
                 continue
+            if n.get("kind", "run") in prereq.CHECKED_KINDS and nid not in prechecked:
+                pc = prereq.check(spec["text"], spec.get("branch") or "", lid, state.get("lines") or {}, repo, runner,
+                                  prereq_remote)
+                fmt = [] if (n.get("planned_at") or "") < prereq.SINCE else pc["format"]
+                if fmt:
+                    if is_retry:
+                        continue
+                    undisp[nid] = ("prereq_format", UNDISP_WHY["prereq_format"])
+                    manual_ready.append(nid)
+                    findings.append({"line": lid, "node": nid, "code": "prereq_format", "why": fmt})
+                    observe("prereq:%s:%s" % (lid, nid), lid, nid, prereq.summary(pc), code="prereq_format")
+                    continue
+                if pc["missing"]:
+                    stale_ok.add(nid)
+                    findings.append({"line": lid, "node": nid, "code": "prereq_missing", "missing": pc["missing"]})
+                    actions.append({"type": "prereq_block", "line": lid, "node": nid, "missing": pc["missing"],
+                                    "summary": prereq.summary(pc), "router": router_bucket(line)["handle"]})
+                    continue
+                if pc["unknown"]:
+                    undisp[nid] = ("prereq_unchecked", UNDISP_WHY["prereq_unchecked"])
+                    findings.append({"line": lid, "node": nid, "code": "prereq_unchecked", "unknown": pc["unknown"]})
+                    continue
             route = resolve_route(n, spec["header"])
             route, route_why = dev_route(project, events, nodes, lid, nid, n, route)
             miss = route_missing(route)
@@ -2167,7 +2221,8 @@ def _send(runner, handle, text):
 def execute(store: snap.Store, result: Dict[str, Any], now: _dt.datetime, runner) -> List[Dict[str, Any]]:
     done = []
     notices: Dict[str, List[str]] = {}
-    notice_lines: Dict[str, str] = {}   # router -> a line id to log its notice under (worktree cleanup notices)
+    notice_lines: Dict[str, str] = {}   # router -> a line id to log its notice under
+    cleanup_notes: Dict[str, str] = {}  # router -> "已清理 N 个…" (only added to a message that is sent anyway)
     who = actor()
 
     def write(ev):
@@ -2175,6 +2230,19 @@ def execute(store: snap.Store, result: Dict[str, Any], now: _dt.datetime, runner
         ev.setdefault("actor", who)
         ev.setdefault("at", snap.iso(now))
         return store.append(ev)
+
+    for a in result["actions"]:
+        if a["type"] != "prereq_block":
+            continue
+        try:
+            write({"kind": "node_block", "blocker": "dep", "line": a["line"], "node": a["node"],
+                   "summary": _short(a["summary"]), "prereq_missing": a["missing"]})
+        except core.ProgressError as exc:
+            done.append({"type": "prereq_block", "node": a["node"], "error": exc.as_dict()})
+            continue
+        notices.setdefault(a["router"], []).append(
+            "代派前核对 %s/%s：%s；已记等上游（dep），缺的出现后巡检自动派" % (a["line"], a["node"], a["summary"][:160]))
+        done.append({"type": "prereq_block", "line": a["line"], "node": a["node"], "missing": a["missing"]})
 
     for a in result["actions"]:
         if a["type"] != "auto_dispatch":
@@ -2292,13 +2360,17 @@ def execute(store: snap.Store, result: Dict[str, Any], now: _dt.datetime, runner
             if a.get("router"):
                 per_router.setdefault(a["router"], []).append(a)
         for h, rows in per_router.items():
-            notices.setdefault(h, []).append("已清理 %d 个已完成工作区，分支保留" % len(rows))
-            notice_lines.setdefault(h, rows[0]["line"])
+            # news only, nothing to do: rides along with a message that goes out anyway, never sent alone
+            # (11-07: SR's router, 88 % busy, got a cleanup-only notice every 15 min)
+            cleanup_notes[h] = "已清理 %d 个已完成工作区，分支保留" % len(rows)
 
     nudge_by_target = {a["target"]: a for a in result["actions"] if a["type"] == "nudge"}
     for target in set(notices) | set(nudge_by_target):
         a = nudge_by_target.get(target)
-        parts = ["[巡检] " + "；".join(notices[target])] if notices.get(target) else []
+        parts = ["[巡检] " + "；".join(notices[target] + ([cleanup_notes[target]] if target in cleanup_notes else []))] \
+            if notices.get(target) else []
+        if a and target in cleanup_notes and not notices.get(target):
+            parts.append("[巡检] " + cleanup_notes[target])
         if a:
             parts.append(a["text"])
         text = " ".join(parts)[:1200]
