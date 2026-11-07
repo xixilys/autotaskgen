@@ -310,6 +310,18 @@ class MapSections(unittest.TestCase):
         self.assertNotIn("等人", txt)
         self.assertNotIn("标错", txt)
 
+    def test_dep_wait_that_also_waits_on_the_human_is_both_not_mislabeled(self):
+        evs = self.evs + [{"kind": "node_block", "line": "Q", "node": "w", "blocker": "dep", "at": at(300),
+                           "actor": {"role": "router", "handle": R},
+                           "summary": "B13a交接(EVB经核二)和预算guard待交；人类预算授权(经核二)仍未批；dep/no-auto，零调用"}]
+        proj, st = self.fold(evs)
+        txt = "\n".join(sup.blocker_table(proj, st, NOW))
+        self.assertIn("并存：等依赖，文中也提到人类/授权", txt)
+        self.assertNotIn("推断：等人", txt)
+        self.assertNotIn("可能标错", txt)
+        rows, flagged = sup.hard_metrics(proj, st, evs, {"metrics": {}}, NOW)
+        self.assertNotIn("Q:等人", flagged)
+
     def test_blocker_human_not_mislabeled(self):
         evs = self.evs + [{"kind": "node_block", "line": "Q", "node": "w", "blocker": "human", "at": at(300),
                            "actor": {"role": "router", "handle": R}, "summary": "等授权"}]

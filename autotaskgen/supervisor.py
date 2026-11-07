@@ -50,6 +50,9 @@ SCHEMA_ID = "progress-supervisor/v2"
 HUMAN_RE = re.compile(r"人类|授权|端点|首回复|材料|endpoint|批准", re.I)
 # the human step is a later stage, not the current wait ("B8 交付后再请求人类授权", "之后才转 human")
 LATER_RE = re.compile(r"(之后|以后|交付后|完成后|固定后|通过后|后续|后再|再转\s*human|再请求|才需要|才转|才请求)")
+# a dep-labelled wait whose text also names a human step is a wait on both, not a mislabel (11-07: FE waited on the
+# B13a handoff and on the human budget approval; terra flagged it mislabeled for being dep, then for being counted human)
+DEP_RE = re.compile(r"交付|交接|未收|未交|待交|到件|产物|产出|依赖")
 TIER3_RE = re.compile(r"目标|预算|对外|留出集|只有人|授权|端点|人类|完成标准|发布")
 ACTIVE = ("running", "ready", "blocked")
 CHECK_MIN, CHECK_MAX, CHECK_DEFAULT = 30, 360, 60
@@ -270,8 +273,9 @@ def _wait_info(n: Dict[str, Any], now: _dt.datetime) -> Dict[str, Any]:
     # keyword inference only overrides an explicit non-human blocker when the text does not put the human step later
     # (11-06: FE "按516b先等B8…B8交付后核心二请求人类调用授权再转human" with blocker=dep was reported as waiting on the
     # human and "mislabeled", which made the board and a QQ reminder ask the user for something not yet due)
-    human = n.get("blocker") == "human" or (bool(HUMAN_RE.search(txt)) and
-                                             not (n.get("blocker") and LATER_RE.search(last_txt or txt)))
+    hit = bool(HUMAN_RE.search(txt)) and not (n.get("blocker") and LATER_RE.search(last_txt or txt))
+    both = hit and n.get("blocker") == "dep" and bool(DEP_RE.search(txt))
+    human = n.get("blocker") == "human" or (hit and not both)
     mislabeled = human and n.get("status") == "blocked" and n.get("blocker") not in ("human", None)
     failed = False
     last_ad = max([i for i, h in enumerate(hist) if h.get("kind") == "auto_dispatch"] or [-1])
@@ -279,7 +283,7 @@ def _wait_info(n: Dict[str, Any], now: _dt.datetime) -> Dict[str, Any]:
         after = hist[last_ad + 1:]
         failed = any(h.get("kind") == "node_block" and (n.get("blocker") == "env" or "代派失败" in str(h.get("summary")))
                      for h in after) or any("代派失败" in str(h.get("summary") or "") for h in after)
-    return {"since": since, "hours": _hrs(now, since), "human": human, "mislabeled": mislabeled,
+    return {"since": since, "hours": _hrs(now, since), "human": human, "both": both, "mislabeled": mislabeled,
             "dispatch_failed": failed}
 
 
@@ -303,6 +307,8 @@ def blocker_table(project: Dict[str, Any], state: Dict[str, Any], now: _dt.datet
             flags = []
             if w["human"]:
                 flags.append("推断：等人（命中\"人类/授权/端点\"）" if n.get("blocker") != "human" else "等人（blocker=human）")
+            if w["both"]:
+                flags.append("并存：等依赖，文中也提到人类/授权（按 dep 计，不算标错，不计入等人时长；是否真要人给由你核实）")
             if w["mislabeled"]:
                 flags.append("⚠ blocker 可能标错")
             if w["dispatch_failed"]:
